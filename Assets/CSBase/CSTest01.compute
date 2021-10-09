@@ -1,0 +1,42 @@
+﻿// 最基本的计算RenderTexture赋值
+#pragma kernel CSMain
+// 粒子特效更新
+#pragma kernel UpdateParticle
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+RWTexture2D<float4> Result;
+
+[numthreads(8,8,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    // TODO: insert actual code here!
+
+    Result[id.xy] = float4(id.x & id.y, (id.x & 15)/15.0, (id.y & 15)/15.0, 0.0);
+}
+
+struct ParticleData {
+    float3 pos;
+    float4 color;
+};
+
+RWStructuredBuffer<ParticleData> dataBuffer;
+float Time;
+
+//SV_GroupID：线程所在线程组的ID（A,B,C）
+//SV_GroupThreadID：线程所在线程组内ID（a,b,c）
+//numthreads：线程组Size（X,Y,Z）
+//SV_DispatchThreadID：线程的全局ID（x=A*X+a,y=B*Y+b,z=C*Z+c）
+//SV_GroupIndex：当前线程在所在线程组内的下标(d=c*X*Y+b*X+a)
+[numthreads(10,10,10)]
+void UpdateParticle(uint3 gid : SV_GroupID, uint index : SV_GroupIndex)
+{
+	int pindex = gid.x * 1000 + index;
+
+	float x = sin(index);
+	float y = sin(index * 1.2f);
+	float3 forward = float3(x, y, -sqrt(1 - x * x - y * y));
+	dataBuffer[pindex].color = float4(forward.x, forward.y, cos(index) * 0.5f + 0.5, 1);
+	if (Time > gid.x)
+		dataBuffer[pindex].pos += forward * 0.005f;
+}
