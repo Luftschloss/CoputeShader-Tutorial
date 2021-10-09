@@ -1,12 +1,14 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.UI;
 
 public class Test01 : MonoBehaviour
 {
     [Header("CSP1—FillRT")]
     public ComputeShader shader;
-    public RenderTexture temp;
+    private RenderTexture temp;
+    public Material textureMat;
 
     void Start()
     {
@@ -20,9 +22,10 @@ public class Test01 : MonoBehaviour
         temp = new RenderTexture(256, 256, 24);
         temp.enableRandomWrite = true;
         temp.Create();
-
+        textureMat.mainTexture = temp;
         shader.SetTexture(kernelIdx, "Result", temp);
         shader.Dispatch(kernelIdx, 256 / 8, 256 / 8, 1);
+
     }
 
     [Header("CSP2—Particle")]

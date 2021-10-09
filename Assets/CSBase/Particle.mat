@@ -7,7 +7,7 @@ Material:
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_Name: Paticle
+  m_Name: Particle
   m_Shader: {fileID: 4800000, guid: aad4dcfc0869da045b9a90185260ab78, type: 3}
   m_ShaderKeywords: 
   m_LightmapFlags: 4
