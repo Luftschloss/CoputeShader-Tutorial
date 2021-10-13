@@ -28,21 +28,48 @@ public class CameraTool
         return GetPlane(normal, a);
     }
 
+    /// <summary>
+    /// 获取远裁剪面上四个点
+    /// </summary>
+    /// <param name="camera"></param>
+    /// <returns></returns>
     public static Vector3[] GetCameraFarClipPlanePoint(Camera camera)
     {
         Vector3[] points = new Vector3[4];
-        Transform transform = camera.transform;
-        float distance = camera.farClipPlane;
-        float halfFovRad = Mathf.Deg2Rad * camera.fieldOfView * 0.5f;
-        float upLen = distance * Mathf.Tan(halfFovRad);
-        float rightLen = upLen * camera.aspect;
-        Vector3 farCenterPoint = transform.position + distance * transform.forward;
-        Vector3 up = upLen * transform.up;
-        Vector3 right = rightLen * transform.right;
-        points[0] = farCenterPoint - up - right;//left-bottom
-        points[1] = farCenterPoint - up + right;//right-bottom
-        points[2] = farCenterPoint + up - right;//left-up
-        points[3] = farCenterPoint + up + right;//right-up
+        camera.CalculateFrustumCorners(new Rect(0, 0, 1, 1), camera.farClipPlane, camera.stereoActiveEye, points);
+        for (int i = 0; i < 4; i++)
+        {
+            points[i] = camera.transform.TransformVector(points[i]);
+        }
         return points;
     }
+
+    /// <summary>
+    /// 获取视锥体的六个平面
+    /// </summary>
+    /// <param name="camera"></param>
+    /// <returns></returns>
+    public static Vector4[] GetFrustumPlane(Camera camera)
+    {
+        Vector4[] planes = new Vector4[6];
+        Vector3 pos = camera.transform.position;
+        Vector3 fwd = camera.transform.forward;
+        Vector3[] points = GetCameraFarClipPlanePoint(camera);
+        //顺时针
+        planes[0] = GetPlane(pos, points[0], points[1]);                //left
+        planes[1] = GetPlane(pos, points[2], points[3]);                //right
+        planes[2] = GetPlane(pos, points[3], points[0]);                //bottom
+        planes[3] = GetPlane(pos, points[1], points[2]);                //up
+        planes[4] = GetPlane(-fwd, pos + fwd * camera.nearClipPlane);   //near
+        planes[5] = GetPlane(fwd, pos + fwd * camera.farClipPlane);     //far
+        return planes;
+    }
+
+    public static bool IsOutsideThPlane(Vector4 plane, Vector3 point)
+    {
+        Vector3 normal = new Vector3(plane.x, plane.y, plane.z);
+        return Vector3.Dot(normal, point) + plane.w > 0;
+    }
+
+
 }
