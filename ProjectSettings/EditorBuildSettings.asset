@@ -6,6 +6,6 @@ EditorBuildSettings:
   serializedVersion: 2
   m_Scenes:
   - enabled: 1
-    path: Assets/View Frustum Culling/View Frustum Culling.unity
+    path: Assets/2_View Frustum Culling/View Frustum Culling.unity
     guid: 9fc0d4010bbf28b4594072e72b8655ab
   m_configObjects: {}
