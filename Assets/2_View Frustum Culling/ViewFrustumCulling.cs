@@ -35,6 +35,8 @@ public class ViewFrustumCulling : MonoBehaviour
         cullResult = new ComputeBuffer(instanceCount, sizeof(float) * 16, ComputeBufferType.Append);
         argsBuffer = new ComputeBuffer(1, sizeof(uint) * args.Length, ComputeBufferType.IndirectArguments);
         UpdateBuffer();
+
+        
     }
 
     void UpdateBuffer()
@@ -60,6 +62,7 @@ public class ViewFrustumCulling : MonoBehaviour
             //5个参数
             //1.offset: index count per instance
             //2.instance count
+            //
             //3.start index location
             //4.base vertex location
             //5.start instance location.

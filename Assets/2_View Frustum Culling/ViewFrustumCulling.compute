@@ -20,22 +20,22 @@ void ViewPortCulling(uint3 id : SV_DispatchThreadID)
     float4x4 info = input[id.x];
     float3 boundMin = float3(-0.45, 0, -0.225);
     float3 boundMax = float3(0.45, 1.05, 0.225);
-    float4 obbBound[8]; 
-
-    obbBound[0] = mul(info, float4(boundMin,1));
-    obbBound[1] = mul(info, float4(boundMax,1));
-    obbBound[2] = mul(info, float4(boundMax.x, boundMax.y, boundMin.z, 1));
-    obbBound[3] = mul(info, float4(boundMax.x, boundMin.y, boundMax.z, 1));
-    obbBound[4] = mul(info, float4(boundMin.x, boundMax.y, boundMax.z, 1));
-    obbBound[5] = mul(info, float4(boundMax.x, boundMin.y, boundMin.z, 1));
-    obbBound[6] = mul(info, float4(boundMin.x, boundMax.y, boundMin.z, 1));
-    obbBound[7] = mul(info, float4(boundMin.x, boundMin.y, boundMax.z, 1));
+    float4 aabbBound[8]; 
+    //用AABB是为了避免一些大的物体的OBB顶点都在视锥外的情况
+    aabbBound[0] = mul(info, float4(boundMin,1));
+    aabbBound[1] = mul(info, float4(boundMax,1));
+    aabbBound[2] = mul(info, float4(boundMax.x, boundMax.y, boundMin.z, 1));
+    aabbBound[3] = mul(info, float4(boundMax.x, boundMin.y, boundMax.z, 1));
+    aabbBound[4] = mul(info, float4(boundMin.x, boundMax.y, boundMax.z, 1));
+    aabbBound[5] = mul(info, float4(boundMax.x, boundMin.y, boundMin.z, 1));
+    aabbBound[6] = mul(info, float4(boundMin.x, boundMax.y, boundMin.z, 1));
+    aabbBound[7] = mul(info, float4(boundMin.x, boundMin.y, boundMax.z, 1));
 
     for (int i = 0; i < 6; i++)
     {
         for (int j = 0; j < 8; j++)
         {
-            float3 boundPosition = obbBound[j].xyz;
+            float3 boundPosition = aabbBound[j].xyz;
 
             if (!IsOutsidePlane(planes[i], boundPosition))
                 break;
