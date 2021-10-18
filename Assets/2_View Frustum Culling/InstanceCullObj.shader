@@ -1,4 +1,4 @@
-﻿Shader "ComputeShader/Instace//CullInstance"
+﻿Shader "ComputeShader/Instace/CullInstance"
 {
     Properties
     {

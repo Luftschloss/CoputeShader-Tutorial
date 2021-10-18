@@ -343,6 +343,7 @@ MonoBehaviour:
   depthTextureGenerator: {fileID: 739491603}
   compute: {fileID: 7200000, guid: 5b63c0f3db845d542a71faa34f29dc6a, type: 3}
   terrain: {fileID: 1312631596}
+  depthTextureShader: {fileID: 4800000, guid: f8fcddc59c8584e43b507f8fc5b42991, type: 3}
 --- !u!4 &582461642
 Transform:
   m_ObjectHideFlags: 0
@@ -472,7 +473,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   depthTextureShader: {fileID: 4800000, guid: f8fcddc59c8584e43b507f8fc5b42991, type: 3}
-  depthTexture: {fileID: 0}
 --- !u!1 &1312631594
 GameObject:
   m_ObjectHideFlags: 0

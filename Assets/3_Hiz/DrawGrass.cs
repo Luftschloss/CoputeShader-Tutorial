@@ -39,6 +39,28 @@ public class DrawGrass : MonoBehaviour
 
     int cullResultBufferId, vpMatrixId, rtsBufferId, hizTextureId;
 
+    #region Depth
+    [SerializeField]private Shader depthTextureShader;
+    Material depthTextureMaterial;
+    int depthTextureSize;
+
+    RenderTargetIdentifier depthIdentifier;
+    int depthTexID = Shader.PropertyToID("CopiedDepthTex");
+    int colorTexID = Shader.PropertyToID("CopiedColorTex");
+
+    RenderTexture colorTexture;
+    RenderTexture depthTexture;
+
+    RenderTexture depthBufferTexture;
+    RenderTexture colorBufferTexture;
+
+    CommandBuffer copyDepthCMD;
+    CommandBuffer copyColorCMD;
+
+    List<CommandBuffer> depthMipmapCMDs = new List<CommandBuffer>();
+    
+    #endregion
+
     void Start()
     {
         grassCount = GrassCountPerRaw * GrassCountPerRaw;
@@ -56,9 +78,91 @@ public class DrawGrass : MonoBehaviour
         InitComputeBuffer();
         InitGrassPosition();
         InitComputeShader();
+        InitCommandBuffer();
+    }
 
-        //CommandBuffer a = new CommandBuffer();
+    RenderTargetIdentifier depth;
+
+    void InitCommandBuffer()
+    {
+        depthIdentifier  = new RenderTargetIdentifier(depthTexID);
+        depthTextureSize = Mathf.NextPowerOfTwo(Mathf.Max(Screen.width, Screen.height));
+        depthTextureMaterial = new Material(depthTextureShader);
+
+        colorBufferTexture = RenderTexture.GetTemporary(Screen.width, Screen.height, 0, RenderTextureFormat.Default, RenderTextureReadWrite.Default);
+        colorBufferTexture.name = "ColorBuffer";
+        depthBufferTexture = new RenderTexture(Screen.width, Screen.height, 24, RenderTextureFormat.Depth);
+        depthBufferTexture.name = "DepthBuffer";
+
+        // Copy Depth
+        depthTexture = new RenderTexture(depthTextureSize, depthTextureSize, 0, RenderTextureFormat.RHalf);
+        depthTexture.name = "DepthTex";
+        depthTexture.autoGenerateMips = false;
+        depthTexture.useMipMap = true;
+        depthTexture.filterMode = FilterMode.Point;
+        copyDepthCMD = new CommandBuffer();
+        copyDepthCMD.name = "CommandBuffer_DepthBuffer";
+        copyDepthCMD.Blit(depthBufferTexture.depthBuffer, depthTexture.colorBuffer);
+        mainCamera.AddCommandBuffer(CameraEvent.AfterForwardOpaque, copyDepthCMD);
+        Shader.SetGlobalTexture(depthTexID, depthTexture);
+
+        //Copy Color
+        colorTexture = new RenderTexture(Screen.width, Screen.height, 0, RenderTextureFormat.Default);
+        colorTexture.name = "AfterSkyboxTex";
+        copyColorCMD = new CommandBuffer();
+        copyColorCMD.name = "CommandBuffer_ColorBuffer";
+        copyColorCMD.Blit(colorBufferTexture, colorTexture);
+        mainCamera.AddCommandBuffer(CameraEvent.AfterSkybox, copyColorCMD);
+        Shader.SetGlobalTexture(colorTexID, colorTexture);
+
+        int w = depthTextureSize;
+        int mipmapTempID = Shader.PropertyToID("Temp");
+        int mipmapLevel = 0;
+
+        int preTempID = -1;
+        int currentTempID = -1;
         
+        RenderTargetIdentifier preIdentifier = new RenderTargetIdentifier();
+        RenderTargetIdentifier currentIdentifier = new RenderTargetIdentifier();
+
+        RenderTexture currentRenderTexture = null;//当前mipmapLevel对应的mipmap
+        RenderTexture preRenderTexture = null;//上一层的mipmap，即mipmapLevel-1对应的mipmap
+
+        //如果当前的mipmap的宽高大于8，则计算下一层的mipmap
+        while (w > 8)
+        {
+            currentTempID = Shader.PropertyToID("DepthMipmap" + mipmapLevel);
+            CommandBuffer depthMipmapCmd = new CommandBuffer();
+            depthMipmapCmd.GetTemporaryRT(currentTempID, w,w,0, FilterMode.Point, RenderTextureFormat.RHalf);
+            currentIdentifier = new RenderTargetIdentifier(currentTempID);
+
+            currentRenderTexture = RenderTexture.GetTemporary(w, w, 0, RenderTextureFormat.RHalf);
+            currentRenderTexture.filterMode = FilterMode.Point;
+            //if (preTempID == -1)
+            if (preRenderTexture == null)
+            {
+                //Mipmap[0]即copy原始的深度图
+                depthMipmapCmd.Blit(depthTexture.colorBuffer, currentRenderTexture);
+            }
+            else
+            {
+                //将Mipmap[i] Blit到Mipmap[i+1]上
+                depthMipmapCmd.Blit(preRenderTexture, currentRenderTexture, depthTextureMaterial);
+                //depthMipmapCmd.ReleaseTemporaryRT(preTempID);
+                RenderTexture.ReleaseTemporary(preRenderTexture);
+            }
+            depthMipmapCmd.CopyTexture(currentRenderTexture, 0, 0, depthTexture, 0, mipmapLevel);
+        
+            mainCamera.AddCommandBuffer(CameraEvent.AfterForwardOpaque, depthMipmapCmd);
+            depthMipmapCMDs.Add(depthMipmapCmd);
+
+            preRenderTexture = currentRenderTexture;
+            preTempID = currentTempID;
+            preIdentifier = currentIdentifier;
+            w /= 2;
+            mipmapLevel++;
+        }
+        RenderTexture.ReleaseTemporary(preRenderTexture);
     }
 
     void InitComputeShader()
