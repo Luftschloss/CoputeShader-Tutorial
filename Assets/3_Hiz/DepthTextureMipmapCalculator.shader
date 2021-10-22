@@ -33,7 +33,8 @@
             inline float CalculateMipmapDepth(float2 uv)
             {
                 float4 depth;
-                float offset = _MainTex_TexelSize.x / 2;
+                //一个纹素是一个Offset（和UV空间统一）
+                float offset = _MainTex_TexelSize.x;
                 depth.x = tex2D(_MainTex, uv);
                 depth.y = tex2D(_MainTex, uv + float2(0, offset));
                 depth.z = tex2D(_MainTex, uv + float2(offset, 0));
