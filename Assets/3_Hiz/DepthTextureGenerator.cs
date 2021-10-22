@@ -23,9 +23,11 @@ public class DepthTextureGenerator : MonoBehaviour
 
     Material depthTextureMaterial;
 
-    const RenderTextureFormat depthTextureFormat = RenderTextureFormat.RHalf; //深度取值范围0-1，单通道即可
+    const RenderTextureFormat depthTextureFormat = RenderTextureFormat.RFloat; //深度取值范围0-1，单通道即可
 
     int depthTextureShaderID;
+
+    CommandBuffer depthMipmapGenerateCMD;
 
 
     void Start()
@@ -34,6 +36,10 @@ public class DepthTextureGenerator : MonoBehaviour
         Camera.main.depthTextureMode |= DepthTextureMode.Depth;
         depthTextureShaderID = Shader.PropertyToID("_CameraDepthTexture");
         InitDepthTexture();
+
+        depthMipmapGenerateCMD = new CommandBuffer();
+        depthMipmapGenerateCMD.name = "Generate DepthMipmapTexture";
+        Camera.main.AddCommandBuffer(CameraEvent.AfterDepthTexture, depthMipmapGenerateCMD);
     }
 
     void InitDepthTexture()
@@ -49,6 +55,8 @@ public class DepthTextureGenerator : MonoBehaviour
     //生成mipmap
     void OnPostRender()
     {
+        depthMipmapGenerateCMD.Clear();
+
         int w = depthTexture.width;
         int mipmapLevel = 0;
 
@@ -63,15 +71,15 @@ public class DepthTextureGenerator : MonoBehaviour
             if (preRenderTexture == null)
             {
                 //Mipmap[0]即copy原始的深度图
-                Graphics.Blit(Shader.GetGlobalTexture(depthTextureShaderID), currentRenderTexture);
+                depthMipmapGenerateCMD.Blit(BuiltinRenderTextureType.Depth, currentRenderTexture);
             }
             else
             {
                 //将Mipmap[i] Blit到Mipmap[i+1]上
-                Graphics.Blit(preRenderTexture, currentRenderTexture, depthTextureMaterial);
+                depthMipmapGenerateCMD.Blit(preRenderTexture, currentRenderTexture, depthTextureMaterial);
                 RenderTexture.ReleaseTemporary(preRenderTexture);
             }
-            Graphics.CopyTexture(currentRenderTexture, 0, 0, depthTexture, 0, mipmapLevel);
+            depthMipmapGenerateCMD.CopyTexture(currentRenderTexture, 0, 0, depthTexture, 0, mipmapLevel);
             preRenderTexture = currentRenderTexture;
 
             w /= 2;
