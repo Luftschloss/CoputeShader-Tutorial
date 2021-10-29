@@ -16,27 +16,21 @@
             #pragma vertex vert
             #pragma fragment frag
             #pragma target 4.5
-
             #include "UnityCG.cginc"
-
             struct appdata
             {
                 float4 vertex : POSITION;
                 float2 uv : TEXCOORD0;
             };
-
             struct v2f
             {
                 float2 uv : TEXCOORD0;
                 float4 vertex : SV_POSITION;
             };
-
 #if SHADER_TARGET >= 45
             StructuredBuffer<float4x4> rtsBuffer;
 #endif
-
             sampler2D _MainTex;
-            float4 _MainTex_ST;
             fixed4 _Color;
 
             v2f vert (appdata v, uint instanceID : SV_InstanceID)
@@ -51,10 +45,8 @@
 
             fixed4 frag (v2f i) : SV_Target
             {
-                // sample the texture
                 fixed4 col = tex2D(_MainTex, i.uv);
-                
-                return col*_Color;
+                return col * _Color;
             }
             ENDCG
         }

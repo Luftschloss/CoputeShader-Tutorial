@@ -1,6 +1,7 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.UI;
 
 public class ViewFrustumCulling : MonoBehaviour
 {
@@ -34,11 +35,8 @@ public class ViewFrustumCulling : MonoBehaviour
         kernel = cullingShader.FindKernel("ViewPortCulling");
         cullResult = new ComputeBuffer(instanceCount, sizeof(float) * 16, ComputeBufferType.Append);
         argsBuffer = new ComputeBuffer(1, sizeof(uint) * args.Length, ComputeBufferType.IndirectArguments);
-        UpdateBuffer();
-
-        
+        UpdateBuffer();  
     }
-
     void UpdateBuffer()
     {
         if (localToWorldMatrixBuffer != null)
@@ -47,25 +45,16 @@ public class ViewFrustumCulling : MonoBehaviour
         Matrix4x4[] localToWorldMatrixArray = new Matrix4x4[instanceCount];
         for (int i = 0; i < instanceCount; i++)
         {
-            float x = Random.Range(instanceArea.min.x, instanceArea.max.x);
-            float y = Random.Range(instanceArea.min.y, instanceArea.max.y);
-            float z = Random.Range(instanceArea.min.z, instanceArea.max.z);
-
-            Vector3 randomPos = new Vector3(x, y, z);
+            Vector3 randomPos = new Vector3(Random.Range(instanceArea.min.x, instanceArea.max.x),
+                                            Random.Range(instanceArea.min.y, instanceArea.max.y), 
+                                            Random.Range(instanceArea.min.z, instanceArea.max.z));
             Quaternion randomRot = Random.rotation.normalized;
             localToWorldMatrixArray[i] = Matrix4x4.TRS(randomPos, randomRot, Vector3.one);
         }
         localToWorldMatrixBuffer.SetData(localToWorldMatrixArray);
-
         if (instanceMesh != null)
         {
-            //5个参数
-            //1.offset: index count per instance
-            //2.instance count
-            //
-            //3.start index location
-            //4.base vertex location
-            //5.start instance location.
+            //offset: index count per instance, instance count, start index location, base vertex location, start instance location.
             args[0] = (uint)instanceMesh.GetIndexCount(0);
             args[1] = (uint)instanceCount;
             args[2] = (uint)instanceMesh.GetIndexStart(0);
@@ -81,6 +70,9 @@ public class ViewFrustumCulling : MonoBehaviour
         lastInstanceCount = instanceCount;
     }
 
+    [SerializeField] Text showCount;
+    uint[] argsTemp = new uint[5];
+
     private void Update()
     {
         if (lastInstanceCount != instanceCount)
@@ -92,10 +84,16 @@ public class ViewFrustumCulling : MonoBehaviour
         cullingShader.SetBuffer(kernel, "cullresult", cullResult);
         cullingShader.SetVectorArray("planes", planes);
         cullingShader.Dispatch(kernel, 1 + (instanceCount / 640), 1, 1);
+        //DrawInstancedIndirect
         instanceMat.SetBuffer("rtsBuffer", cullResult);
-
         ComputeBuffer.CopyCount(cullResult, argsBuffer, sizeof(uint));
         Graphics.DrawMeshInstancedIndirect(instanceMesh, 0, instanceMat, meshBound, argsBuffer);
+
+        if(showCount)
+        {
+            argsBuffer.GetData(argsTemp);
+            showCount.text = string.Format("Culling前数量：{0} \nCulling后数量：{1}", instanceCount, argsTemp[1]);
+        }
     }
 
     private void OnDisable()
