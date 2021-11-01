@@ -60,7 +60,6 @@ void GrassCulling(uint3 id : SV_DispatchThreadID)
         if (maxX < ndc.x) maxX = ndc.x;
         if (maxY < ndc.y) maxY = ndc.y;
         if (maxZ < ndc.z) maxZ = ndc.z;
-        continue;
     }
     if (!isInViewport)
         return;
@@ -72,46 +71,28 @@ void GrassCulling(uint3 id : SV_DispatchThreadID)
     //DirextX
     float depth = maxZ;
     //OpenGL
-    if (isOpenGL) {
-        depth = minZ;
-        depth = depth * 0.5f + 0.5f;
-    }
+    if (isOpenGL)
+        depth = minZ * 0.5f + 0.5f;
     //计算应该读取哪层mipmap
     uint mipmapLevel = (uint)clamp(log2(max(maxX - minX, maxY - minY) / 2 * depthTextureSize), 0, log2(depthTextureSize) - 4);
     //当前mipmap的大小
     uint size = depthTextureSize / (1 << mipmapLevel);
-
     //左下角和右下角点所在的像素
     uint2 pixelLeftBottom = uint2(clamp(uvLeftBottom.x * size, 0, size - 1), clamp(uvLeftBottom.y * size, 0, size - 1));
     uint2 pixelRightTop = uint2(clamp(uvRightTop.x * size, 0, size - 1), clamp(uvRightTop.y * size, 0, size - 1));
     //采样对应深度图的对应像素的深度值，并且作比较
     float depthInTexture = hizTexture.mips[mipmapLevel][pixelLeftBottom].r;
     if (isOpenGL) {
-        if (pixelLeftBottom.x < pixelRightTop.x && pixelLeftBottom.y < pixelRightTop.y) {
-            depthInTexture = max(max(depthInTexture, hizTexture.mips[mipmapLevel][pixelRightTop].r),
-                max(hizTexture.mips[mipmapLevel][int2(pixelLeftBottom.x, pixelRightTop.y)].r, hizTexture.mips[mipmapLevel][int2(pixelRightTop.x, pixelLeftBottom.y)].r));
-        }
-        else if (pixelLeftBottom.x < pixelRightTop.x)
-            depthInTexture = max(depthInTexture, hizTexture.mips[mipmapLevel][int2(pixelRightTop.x, pixelLeftBottom.y)].r);
-        else if (pixelLeftBottom.y < pixelRightTop.y)
-            depthInTexture = max(depthInTexture, hizTexture.mips[mipmapLevel][int2(pixelLeftBottom.x, pixelRightTop.y)].r);
-
+        depthInTexture = max(max(depthInTexture, hizTexture.mips[mipmapLevel][pixelRightTop].r),
+            max(hizTexture.mips[mipmapLevel][int2(pixelLeftBottom.x, pixelRightTop.y)].r, hizTexture.mips[mipmapLevel][int2(pixelRightTop.x, pixelLeftBottom.y)].r));
         if (depthInTexture < depth)
             return;
     }
     else {
-        if (pixelLeftBottom.x < pixelRightTop.x && pixelLeftBottom.y < pixelRightTop.y) {
-            depthInTexture = min(min(depthInTexture, hizTexture.mips[mipmapLevel][pixelRightTop].r),
-                min(hizTexture.mips[mipmapLevel][int2(pixelLeftBottom.x, pixelRightTop.y)].r, hizTexture.mips[mipmapLevel][int2(pixelRightTop.x, pixelLeftBottom.y)].r));
-        }
-        else if (pixelLeftBottom.x < pixelRightTop.x)
-            depthInTexture = min(depthInTexture, hizTexture.mips[mipmapLevel][int2(pixelRightTop.x, pixelLeftBottom.y)].r);
-        else if (pixelLeftBottom.y < pixelRightTop.y)
-            depthInTexture = min(depthInTexture, hizTexture.mips[mipmapLevel][int2(pixelLeftBottom.x, pixelRightTop.y)].r);
-
+        depthInTexture = min(min(depthInTexture, hizTexture.mips[mipmapLevel][pixelRightTop].r),
+            min(hizTexture.mips[mipmapLevel][int2(pixelLeftBottom.x, pixelRightTop.y)].r, hizTexture.mips[mipmapLevel][int2(pixelRightTop.x, pixelLeftBottom.y)].r));
         if (depthInTexture > depth)
             return;
     }
-
     cullResultBuffer.Append(grassMMatrix);
 }

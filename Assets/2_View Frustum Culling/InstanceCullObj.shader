@@ -32,6 +32,7 @@
 #endif
             sampler2D _MainTex;
             fixed4 _Color;
+            fixed4 _MainTex_ST;
 
             v2f vert (appdata v, uint instanceID : SV_InstanceID)
             {

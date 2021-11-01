@@ -52,14 +52,12 @@ public class DepthTextureGenerator : MonoBehaviour
         depthTexture.Create();
     }
 
-    //生成mipmap
+    //生成DepthMipmap
     void OnPostRender()
     {
         depthMipmapGenerateCMD.Clear();
-
         int w = depthTexture.width;
         int mipmapLevel = 0;
-
         RenderTexture currentRenderTexture = null;//当前mipmapLevel对应的mipmap
         RenderTexture preRenderTexture = null;//上一层的mipmap，即mipmapLevel-1对应的mipmap
 
@@ -70,7 +68,7 @@ public class DepthTextureGenerator : MonoBehaviour
             currentRenderTexture.filterMode = FilterMode.Point;
             if (preRenderTexture == null)
             {
-                //Mipmap[0]即copy原始的深度图
+                //Mipmap[0]copy原始的深度图
                 depthMipmapGenerateCMD.Blit(BuiltinRenderTextureType.Depth, currentRenderTexture);
             }
             else
