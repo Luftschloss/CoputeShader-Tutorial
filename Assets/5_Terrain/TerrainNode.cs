@@ -31,9 +31,9 @@ public class TerrainNode
             var halfY = r.w / 2;
             int subMip = m - 1;
             children[0] = new TerrainNode(new float4(r.x, r.y, halfX, halfY), subMip);
-            children[0] = new TerrainNode(new float4(r.x + halfX, r.y, halfX, halfY), subMip);
-            children[0] = new TerrainNode(new float4(r.x, r.y + halfY, halfX, halfY), subMip);
-            children[0] = new TerrainNode(new float4(r.x + halfX, r.y + halfY, halfX, halfY), subMip);
+            children[1] = new TerrainNode(new float4(r.x + halfX, r.y, halfX, halfY), subMip);
+            children[2] = new TerrainNode(new float4(r.x, r.y + halfY, halfX, halfY), subMip);
+            children[3] = new TerrainNode(new float4(r.x + halfX, r.y + halfY, halfX, halfY), subMip);
         }
     }
 
@@ -64,7 +64,7 @@ public class TerrainNode
     public void CollectNodeInfo(Vector2 center, List<NodeInfo> allNodeInfo, float[] lods)
     {
         // 非Root，剩下mip=0全部，mip>0的lodDistance外的，水平Distance作为LODDistance
-        if (mip >= 0 && (mip == 0 || (center - new Vector2(rect.x + rect.z / 2, rect.y + rect.w / 2)).magnitude >= lods[mip]))
+        if (mip >= 0 && (mip == 0 || (center - new Vector2(rect.x + rect.z * 0.5f, rect.y + rect.w * 0.5f)).magnitude >= lods[mip]))
         {
             index = allNodeInfo.Count;
             allNodeInfo.Add(this.info);

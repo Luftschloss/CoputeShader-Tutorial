@@ -32,6 +32,8 @@ public class DepthTextureGenerator : MonoBehaviour
 
     void Start()
     {
+        if (depthTextureShader == null)
+            depthTextureShader = Shader.Find("ComputeShader/DepthTextureMipmapCalculator");
         depthTextureMaterial = new Material(depthTextureShader);
         Camera.main.depthTextureMode |= DepthTextureMode.Depth;
         depthTextureShaderID = Shader.PropertyToID("_CameraDepthTexture");
