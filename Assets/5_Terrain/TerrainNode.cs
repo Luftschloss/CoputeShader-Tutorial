@@ -3,6 +3,10 @@ using System.Collections.Generic;
 using Unity.Mathematics;
 using UnityEngine;
 
+/// <summary>
+/// CPU维护四叉树
+/// TODO：放在CPU端，四叉树更新的开销相对还是比较高的，需要实现GPU QuadTree
+/// </summary>
 public class TerrainNode
 {
     public float4 rect;

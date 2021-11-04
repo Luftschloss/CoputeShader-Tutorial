@@ -106,91 +106,9 @@ Shader "GPU Driven/GPUTerrain"
 
             #pragma vertex TerrainVertex
             #pragma fragment TerrainFragment
-            #include "UnityCG.cginc"
-            #include "GPUTerrainForwardBase.hlsl"
-
-            ENDHLSL
-        }
-
-        Pass
-        {
-            Name "ShadowCaster"
-            Tags{"LightMode" = "ShadowCaster"}
-
-            ZWrite On
-            ZTest LEqual
-            Cull[_Cull]
-
-            HLSLPROGRAM
-            // Required to compile gles 2.0 with standard srp library
-            #pragma prefer_hlslcc gles
-            #pragma exclude_renderers d3d11_9x
-            #pragma target 2.0
-
-            // -------------------------------------
-            // Material Keywords
-            #pragma shader_feature _ALPHATEST_ON
-
-            //--------------------------------------
-            // GPU Instancing
-            #pragma multi_compile_instancing
-            #pragma shader_feature _SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A
-
-            #pragma vertex ShadowPassVertex
-            #pragma fragment ShadowPassFragment
 
             #include "UnityCG.cginc"
             #include "GPUTerrainForwardBase.hlsl"
-
-            float3 _LightDirection;
-
-            struct AttributesLean
-            {
-                float4 position : POSITION;
-                float3 normalOS : NORMAL;
-#ifdef _ALPHATEST_ON
-                float2 texcoord     : TEXCOORD0;
-#endif
-            };
-
-            struct VaryingsLean
-            {
-                float4 clipPos : SV_POSITION;
-#ifdef _ALPHATEST_ON
-                float2 texcoord     : TEXCOORD0;
-#endif
-            };
-
-            VaryingsLean ShadowPassVertex(AttributesLean v, uint instanceID : SV_InstanceID)
-            {
-                float4 rect = _AllInstancesTransformBuffer[_VisibleInstanceIDBuffer[instanceID]].rect;
-                float2 posXZ = rect.zw * 0.25 * v.position.xz + rect.xy; //we pre-transform to posWS in C# now
-                VaryingsLean o = (VaryingsLean)0;
-
-                float3 positionWS = mul(unity_ObjectToWorld, posXZ.xyy);
-                float height = UnpackHeightmap(tex2D(_TerrainHeightmapTexture, positionWS.xz));
-                positionWS.y = height * terrainParam.y * 2;
-                float3 normalWS = tex2D(_TerrainNormalmapTexture, positionWS.xz).rgb * 2 - 1;
-                float4 clipPos = TransformWorldToHClip(ApplyShadowBias(positionWS, normalWS, _LightDirection));
-#if UNITY_REVERSED_Z
-                clipPos.z = min(clipPos.z, clipPos.w * UNITY_NEAR_CLIP_VALUE);
-#else
-                clipPos.z = max(clipPos.z, clipPos.w * UNITY_NEAR_CLIP_VALUE);
-#endif
-                o.clipPos = clipPos;
-#ifdef _ALPHATEST_ON
-                o.texcoord = v.texcoord;
-#endif
-                return o;
-            }
-
-            half4 ShadowPassFragment(VaryingsLean IN) : SV_TARGET
-            {
-            #ifdef _ALPHATEST_ON
-                ClipHoles(IN.texcoord);
-            #endif
-                return 0;
-            }
 
             ENDHLSL
         }

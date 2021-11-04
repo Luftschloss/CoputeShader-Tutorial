@@ -172,9 +172,9 @@ public class GPUTerrain : MonoBehaviour
         cullTerrainShadowKernel = this.cullingComputeShader.FindKernel("CullTerrainShadow");
         cullingComputeShader.SetBuffer(cullTerrainKernel, "_AllInstancesPosWSBuffer", allInstancePosBuffer);
         cullingComputeShader.SetBuffer(cullTerrainKernel, "_VisibleInstancesOnlyPosWSIDBuffer", visibleInstancePosIDBuffer);
-        cullingComputeShader.SetBuffer(cullTerrainKernel, "result", visiableNodeInfoBuffer);
+        if(Debug)
+            cullingComputeShader.SetBuffer(cullTerrainKernel, "result", visiableNodeInfoBuffer);
         cullingComputeShader.SetTexture(cullTerrainKernel, "_HeightMap", heightMap);
-
         cullingComputeShader.SetBuffer(cullTerrainShadowKernel, "_AllInstancesPosWSBuffer", allInstancePosBuffer);
         cullingComputeShader.SetBuffer(cullTerrainShadowKernel, "_VisibleInstancesOnlyPosWSIDBuffer", visibleInstancePosIDBuffer);
         cullingComputeShader.SetTexture(cullTerrainShadowKernel, "_HeightMap", heightMap);
@@ -192,7 +192,8 @@ public class GPUTerrain : MonoBehaviour
         Matrix4x4 p = camera.projectionMatrix;
         Matrix4x4 vp = p * v;
         visibleInstancePosIDBuffer.SetCounterValue(0);
-        visiableNodeInfoBuffer.SetCounterValue(0);
+        if(Debug)
+            visiableNodeInfoBuffer.SetCounterValue(0);
         cullingComputeShader.SetMatrix("_VPMatrix", vp);
         cullingComputeShader.Dispatch(cullTerrainKernel, Mathf.CeilToInt(allNodeInfo.Count / 64f), 1, 1);
         ComputeBuffer.CopyCount(visibleInstancePosIDBuffer, argsBuffer, 4);
@@ -205,6 +206,24 @@ public class GPUTerrain : MonoBehaviour
             visiableNodeInfoBuffer.GetData(visibleNodeInfoArray);
         }
         Graphics.DrawMeshInstancedIndirect(instanceMesh, 0, mat, nodeBounds, argsBuffer);
+    }
+
+    private void OnDisable()
+    {
+        allInstancePosBuffer?.Release();
+        allInstancePosBuffer = null;
+
+        visibleInstancePosIDBuffer?.Release();
+        visibleInstancePosIDBuffer = null;
+        
+        argsBuffer?.Release();
+        argsBuffer = null;
+
+        shadowBuffer?.Release();
+        shadowBuffer = null;
+
+        visiableNodeInfoBuffer?.Release();
+        visiableNodeInfoBuffer = null;
     }
 
     #region Debug
