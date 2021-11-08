@@ -4,5 +4,5 @@ using UnityEngine;
 
 public class TerrainAsset : ScriptableObject
 {
-    
+    Texture2D HeightMap;
 }

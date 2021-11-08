@@ -17,6 +17,7 @@ struct Varyings
 #endif
     float3 normal : TEXCOORD3;
     float4 clipPos : SV_POSITION;
+    half4 color : COLOR;
 };
 
 struct NodeInfoData
@@ -71,6 +72,7 @@ Varyings TerrainVertex(Attributes input, uint instanceID : SV_InstanceID)
     positionWS.y = height * terrainParam.y * 2;
     output.normal = normalWS;
     output.clipPos = UnityObjectToClipPos(positionWS);
+    output.color = lerp(half4(1.0, 0.0, 0.0, 1.0), half4(0.0, 0.0, 1.0, 1.0), (float)infoData.mipmap / 3);
     return output;
 }
 
@@ -78,7 +80,7 @@ Varyings TerrainVertex(Attributes input, uint instanceID : SV_InstanceID)
 
 half4 TerrainFragment(Varyings input) : SV_Target
 {
-    float4 color = float4(1.0, 0.0, 0.0, 1.0);
+    float4 color = input.color;
 
     return color;
 }

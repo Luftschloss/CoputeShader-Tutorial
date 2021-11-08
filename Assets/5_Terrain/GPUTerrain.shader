@@ -38,7 +38,6 @@ Shader "GPU Driven/GPUTerrain"
         [HideInInspector] _AlphaClip("__clip", Float) = 0.0
         [HideInInspector] _SrcBlend("__src", Float) = 1.0
         [HideInInspector] _DstBlend("__dst", Float) = 0.0
-        [HideInInspector] _ZWrite("__zw", Float) = 1.0
         [HideInInspector] _Cull("__cull", Float) = 2.0
 
         _ReceiveShadows("Receive Shadows", Float) = 1.0
@@ -69,7 +68,7 @@ Shader "GPU Driven/GPUTerrain"
             // no LightMode tag are also rendered by Universal Render Pipeline
 
             Blend[_SrcBlend][_DstBlend]
-            ZWrite[_ZWrite]
+            ZWrite On
             Cull[_Cull]
 
             HLSLPROGRAM

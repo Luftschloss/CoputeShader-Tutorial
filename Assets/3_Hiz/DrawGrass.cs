@@ -41,6 +41,9 @@ public class DrawGrass : MonoBehaviour
 
     void Start()
     {
+        QualitySettings.vSyncCount = 0;
+        Application.targetFrameRate = 60;
+
         grassCount = GrassCountPerRaw * GrassCountPerRaw;
         mainCamera = Camera.main;
 
@@ -84,16 +87,21 @@ public class DrawGrass : MonoBehaviour
 
     void Update()
     {
-        compute.SetTexture(kernel, hizTextureId, depthTextureGenerator.DepthTexture);
-        compute.SetMatrix(vpMatrixId, GL.GetGPUProjectionMatrix(mainCamera.projectionMatrix, false) * mainCamera.worldToCameraMatrix);
-        cullResultBuffer.SetCounterValue(0);
-        compute.SetBuffer(kernel, cullResultBufferId, cullResultBuffer);
-        compute.Dispatch(kernel, 1 + grassCount / 640, 1, 1);
-        grassMaterial.SetBuffer(rtsBufferId, cullResultBuffer);
+        if (useCulling)
+        {
+            compute.SetTexture(kernel, hizTextureId, depthTextureGenerator.DepthTexture);
+            compute.SetMatrix(vpMatrixId, GL.GetGPUProjectionMatrix(mainCamera.projectionMatrix, false) * mainCamera.worldToCameraMatrix);
+            cullResultBuffer.SetCounterValue(0);
+            compute.SetBuffer(kernel, cullResultBufferId, cullResultBuffer);
+            compute.Dispatch(kernel, 1 + grassCount / 640, 1, 1);
+            grassMaterial.SetBuffer(rtsBufferId, cullResultBuffer);
+        }
+        else
+            grassMaterial.SetBuffer(rtsBufferId, grassMatrixBuffer);
 
         //获取实际要渲染的数量
         ComputeBuffer.CopyCount(cullResultBuffer, argsBuffer, sizeof(uint));
-        Graphics.DrawMeshInstancedIndirect(grassMesh, subMeshIndex, grassMaterial, new Bounds(Vector3.zero, new Vector3(500.0f, 500.0f, 100.0f)), argsBuffer);
+        Graphics.DrawMeshInstancedIndirect(grassMesh, subMeshIndex, grassMaterial, new Bounds(Vector3.zero, new Vector3(1.0f, 1.0f, 1.0f)), argsBuffer);
     }
 
     /// <summary>
@@ -116,6 +124,31 @@ public class DrawGrass : MonoBehaviour
             }
         }
         grassMatrixBuffer.SetData(grassMatrixs);
+    }
+
+    bool useCulling;
+
+    bool useHiz;
+
+    public void SetMode(int index)
+    {
+        switch (index)
+        {
+            case 0:
+                useCulling = false;
+                useHiz = false;
+                break;
+            case 1:
+                useCulling = true;
+                useHiz = false;
+                break;
+            case 2:
+                useCulling = true;
+                useHiz = true;
+                break;
+        }
+        depthTextureGenerator.useHiz = useHiz;
+        compute.SetBool("useHiz", useHiz);
     }
 
     void OnDisable()

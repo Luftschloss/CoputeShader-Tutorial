@@ -7,8 +7,10 @@ using UnityEngine.Rendering;
 public class DepthTextureGenerator : MonoBehaviour
 {
     public Shader depthTextureShader;
-    RenderTexture depthTexture;
+    [SerializeField]RenderTexture depthTexture;
     public RenderTexture DepthTexture => depthTexture;
+
+    public DepthType depthType;
 
     int depthTextureSize = 0;
     public int DepthTextureSize
@@ -20,6 +22,8 @@ public class DepthTextureGenerator : MonoBehaviour
             return depthTextureSize;
         }
     }
+
+    public bool useHiz;
 
     Material depthTextureMaterial;
 
@@ -41,7 +45,10 @@ public class DepthTextureGenerator : MonoBehaviour
 
         depthMipmapGenerateCMD = new CommandBuffer();
         depthMipmapGenerateCMD.name = "Generate DepthMipmapTexture";
-        Camera.main.AddCommandBuffer(CameraEvent.AfterDepthTexture, depthMipmapGenerateCMD);
+        if(depthType == DepthType.CurFrame)
+            Camera.main.AddCommandBuffer(CameraEvent.AfterDepthTexture, depthMipmapGenerateCMD);
+        else if (depthType == DepthType.LastFrame)
+            Camera.main.AddCommandBuffer(CameraEvent.AfterForwardOpaque, depthMipmapGenerateCMD);
     }
 
     void InitDepthTexture()
@@ -57,6 +64,8 @@ public class DepthTextureGenerator : MonoBehaviour
     //生成DepthMipmap
     void OnPostRender()
     {
+        if (!useHiz)
+            return;
         depthMipmapGenerateCMD.Clear();
         int w = depthTexture.width;
         int mipmapLevel = 0;
@@ -92,5 +101,11 @@ public class DepthTextureGenerator : MonoBehaviour
     {
         depthTexture?.Release();
         Destroy(depthTexture);
+    }
+
+    public enum DepthType
+    {
+        CurFrame,
+        LastFrame
     }
 }

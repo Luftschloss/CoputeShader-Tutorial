@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using Unity.Mathematics;
 using UnityEngine;
+using UnityEngine.Profiling;
 using UnityEngine.Rendering;
 
 public class GPUTerrain : MonoBehaviour
@@ -10,7 +11,7 @@ public class GPUTerrain : MonoBehaviour
     [Header("Data")]
     [SerializeField]Terrain terrain;
     [SerializeField] Mesh instanceMesh;
-    Bounds nodeBounds = new Bounds(Vector3.zero, new Vector3(100.0f, 100.0f, 100.0f));
+    Bounds nodeBounds = new Bounds(Vector3.zero, new Vector3(1000.0f, 1000.0f, 1000.0f));
 
     [Header("GPU Terrain Paramas")]
     public int resolution = 64;
@@ -181,13 +182,22 @@ public class GPUTerrain : MonoBehaviour
         cullingComputeShader.SetFloat("_TerrainHeightSize", 2 * terrain.terrainData.size.y);
         mat.SetBuffer("_AllInstancesTransformBuffer", allInstancePosBuffer);
         mat.SetBuffer("_VisibleInstanceIDBuffer", visibleInstancePosIDBuffer);
+
+        cullingComputeShader.SetInt("depthTextureSize", depthTextureGenerator.DepthTextureSize);
+        cullingComputeShader.SetBool("isOpenGL", Camera.main.projectionMatrix.Equals(GL.GetGPUProjectionMatrix(Camera.main.projectionMatrix, false)));
     }
 
     private void Update()
     {
-        var hizRT = depthTextureGenerator.DepthTexture;
-        cullingComputeShader.SetTexture(cullTerrainKernel, "_HiZMap", hizRT);
-        cullingComputeShader.SetVector("_HizSize", new Vector4(hizRT.width, hizRT.height, 0, 0));
+        //if(Input.GetKeyDown(KeyCode.Space))
+        {
+            Profiler.BeginSample("UpdateTreeNode");
+            UpdateQuadTreeNode();
+            UpdateComputeBuffer();
+            Profiler.EndSample();
+        }
+
+        cullingComputeShader.SetTexture(cullTerrainKernel, "_HiZMap", depthTextureGenerator.DepthTexture);
         Matrix4x4 v = camera.worldToCameraMatrix;
         Matrix4x4 p = camera.projectionMatrix;
         Matrix4x4 vp = p * v;

@@ -2,6 +2,7 @@
 
 uint grassCount;
 bool isOpenGL;
+bool useHiz;
 StructuredBuffer<float4x4> grassMatrixBuffer;
 AppendStructuredBuffer<float4x4> cullResultBuffer;
 float4x4 vpMatrix;
@@ -11,6 +12,8 @@ Texture2D hizTexture;
 //草的包围盒
 static float3 boundMin = float3(-0.2f, 0.0f, -0.3f);
 static float3 boundMax = float3(0.2f, 0.5f, 0.3f);
+
+static float depthOffset = 0.001f;
 
 
 bool IsInViewport(float4 clipSpacePosition)
@@ -64,35 +67,38 @@ void GrassCulling(uint3 id : SV_DispatchThreadID)
     if (!isInViewport)
         return;
 
-    //-------------------------------------------------------Hiz遮挡剔除-------------------------------------------------------
-    //AABB的ndc(-1,1)转到uv(0,1)
-    float2 uvLeftBottom = float2(minX, minY) * 0.5f + 0.5f;
-    float2 uvRightTop = float2(maxX, maxY) * 0.5f + 0.5f;
-    //DirextX
-    float depth = maxZ;
-    //OpenGL
-    if (isOpenGL)
-        depth = minZ * 0.5f + 0.5f;
-    //计算应该读取哪层mipmap
-    uint mipmapLevel = (uint)clamp(log2(max(maxX - minX, maxY - minY) / 2 * depthTextureSize), 0, log2(depthTextureSize) - 4);
-    //当前mipmap的大小
-    uint size = depthTextureSize / (1 << mipmapLevel);
-    //左下角和右下角点所在的像素
-    uint2 pixelLeftBottom = uint2(clamp(uvLeftBottom.x * size, 0, size - 1), clamp(uvLeftBottom.y * size, 0, size - 1));
-    uint2 pixelRightTop = uint2(clamp(uvRightTop.x * size, 0, size - 1), clamp(uvRightTop.y * size, 0, size - 1));
-    //采样对应深度图的对应像素的深度值，并且作比较
-    float depthInTexture = hizTexture.mips[mipmapLevel][pixelLeftBottom].r;
-    if (isOpenGL) {
-        depthInTexture = max(max(depthInTexture, hizTexture.mips[mipmapLevel][pixelRightTop].r),
-            max(hizTexture.mips[mipmapLevel][int2(pixelLeftBottom.x, pixelRightTop.y)].r, hizTexture.mips[mipmapLevel][int2(pixelRightTop.x, pixelLeftBottom.y)].r));
-        if (depthInTexture < depth)
-            return;
-    }
-    else {
-        depthInTexture = min(min(depthInTexture, hizTexture.mips[mipmapLevel][pixelRightTop].r),
-            min(hizTexture.mips[mipmapLevel][int2(pixelLeftBottom.x, pixelRightTop.y)].r, hizTexture.mips[mipmapLevel][int2(pixelRightTop.x, pixelLeftBottom.y)].r));
-        if (depthInTexture > depth)
-            return;
+    if (useHiz)
+    {
+        //-------------------------------------------------------Hiz遮挡剔除-------------------------------------------------------
+        //AABB的ndc(-1,1)转到uv(0,1)
+        float2 uvLeftBottom = float2(minX, minY) * 0.5f + 0.5f;
+        float2 uvRightTop = float2(maxX, maxY) * 0.5f + 0.5f;
+        //DirextX
+        float depth = maxZ;
+        //OpenGL
+        if (isOpenGL)
+            depth = minZ * 0.5f + 0.5f;
+        //计算应该读取哪层mipmap
+        uint mipmapLevel = (uint)clamp(log2(max(maxX - minX, maxY - minY) * 0.5f * depthTextureSize), 0, log2(depthTextureSize) - 4);
+        //当前mipmap的大小
+        uint size = depthTextureSize / (1 << mipmapLevel);
+        //左下角和右下角点所在的像素
+        uint2 pixelLeftBottom = uint2(clamp(uvLeftBottom.x * size, 0, size - 1), clamp(uvLeftBottom.y * size, 0, size - 1));
+        uint2 pixelRightTop = uint2(clamp(uvRightTop.x * size, 0, size - 1), clamp(uvRightTop.y * size, 0, size - 1));
+        //采样对应深度图的对应像素的深度值，并且作比较
+        float depthInTexture = hizTexture.mips[mipmapLevel][pixelLeftBottom].r;
+        if (isOpenGL) {
+            depthInTexture = max(max(depthInTexture, hizTexture.mips[mipmapLevel][pixelRightTop].r),
+                max(hizTexture.mips[mipmapLevel][int2(pixelLeftBottom.x, pixelRightTop.y)].r, hizTexture.mips[mipmapLevel][int2(pixelRightTop.x, pixelLeftBottom.y)].r));
+            if (depthInTexture + depthOffset < depth)
+                return;
+        }
+        else {
+            depthInTexture = min(min(depthInTexture, hizTexture.mips[mipmapLevel][pixelRightTop].r),
+                min(hizTexture.mips[mipmapLevel][int2(pixelLeftBottom.x, pixelRightTop.y)].r, hizTexture.mips[mipmapLevel][int2(pixelRightTop.x, pixelLeftBottom.y)].r));
+            if (depthInTexture - depthOffset > depth)
+                return;
+        }
     }
     cullResultBuffer.Append(grassMMatrix);
 }
