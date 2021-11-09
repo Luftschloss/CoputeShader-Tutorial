@@ -1,6 +1,7 @@
 #ifndef GPUTERRAIN_FORWARD_BASE_INCLUDED
 #define GPUTERRAIN_FORWARD_BASE_INCLUDED
 
+
 struct Attributes
 {
     float4 positionOS   : POSITION;

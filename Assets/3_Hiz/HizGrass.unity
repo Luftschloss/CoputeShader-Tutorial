@@ -633,7 +633,7 @@ MonoBehaviour:
     m_HorizontalOverflow: 0
     m_VerticalOverflow: 0
     m_LineSpacing: 1
-  m_Text: Culling Off Hiz Off
+  m_Text: Culling On Hiz On
 --- !u!222 &578103525
 CanvasRenderer:
   m_ObjectHideFlags: 0
@@ -808,6 +808,9 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   depthTextureShader: {fileID: 4800000, guid: f8fcddc59c8584e43b507f8fc5b42991, type: 3}
+  depthTexture: {fileID: 0}
+  depthType: 0
+  useHiz: 0
 --- !u!1 &744215699
 GameObject:
   m_ObjectHideFlags: 0
@@ -1969,7 +1972,7 @@ MonoBehaviour:
   m_CaptionImage: {fileID: 0}
   m_ItemText: {fileID: 347731798}
   m_ItemImage: {fileID: 0}
-  m_Value: 0
+  m_Value: 2
   m_Options:
     m_Options:
     - m_Text: Culling Off Hiz Off
