@@ -42,6 +42,7 @@ public class GPUTerrain : MonoBehaviour
     const string profilerTag = "Gpu Terrain";
 
     Camera camera;
+
     public DepthTextureGenerator depthTextureGenerator;
 
     private void Start()
@@ -198,6 +199,7 @@ public class GPUTerrain : MonoBehaviour
         }
 
         cullingComputeShader.SetTexture(cullTerrainKernel, "_HiZMap", depthTextureGenerator.DepthTexture);
+
         Matrix4x4 v = camera.worldToCameraMatrix;
         Matrix4x4 p = camera.projectionMatrix;
         Matrix4x4 vp = p * v;

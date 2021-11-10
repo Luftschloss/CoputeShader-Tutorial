@@ -165,6 +165,7 @@ MonoBehaviour:
     type: 3}
   mat: {fileID: 2100000, guid: a792f678620bf7143812c829122b094c, type: 2}
   depthTextureGenerator: {fileID: 163804544}
+  depthGenerator: {fileID: 0}
   Debug: 1
 --- !u!4 &116977646
 Transform:

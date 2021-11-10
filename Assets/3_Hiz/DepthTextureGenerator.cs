@@ -62,7 +62,7 @@ public class DepthTextureGenerator : MonoBehaviour
     }
 
     //生成DepthMipmap
-    void OnPostRender()
+    void OnPreRender()
     {
         if (!useHiz)
             return;
