@@ -1,0 +1,27 @@
+﻿#pragma kernel BlitCopy
+#pragma kernel DownSample
+
+Texture2D<float4> SrcTex;
+RWTexture2D<float4> Mip0Tex;
+RWTexture2D<float4> Mip1Tex;
+RWTexture2D<float4> Mip2Tex;
+RWTexture2D<float4> Mip3Tex;
+RWTexture2D<float4> tempTex;
+
+const uint MipCount = 4;
+
+[numthreads(8, 8, 1)]
+void BlitCopy(uint3 id : SV_DispatchThreadID)
+{
+    uint2 uv = floor(id.xy * srcTexSize / dstTexSize);
+    MipTex[id.xy] = float4(SrcTex[uv].r, 0, 0, 0);
+#if _PING_PONG_COPY
+    MipCopyTex[id.xy] = float4(SrcTex[uv].r, 0, 0, 0);
+#endif
+}
+
+[numthreads(8, 8, 1)]
+void GenerateMipmap(uint3 id : SV_DispatchThreadID)
+{
+    
+}

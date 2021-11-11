@@ -1,0 +1,54 @@
+﻿#pragma kernel BlitCopy
+#pragma kernel DownSample
+
+#pragma multi_compile _PING_PONG_COPY
+
+Texture2D<float4> SrcTex;
+RWTexture2D<float4> MipTex;
+RWTexture2D<float4> MipCopyTex;
+
+uniform float2 srcTexSize;
+uniform float2 dstTexSize;
+
+int Mip;
+
+[numthreads(8, 8, 1)]
+void BlitCopy(uint3 id : SV_DispatchThreadID)
+{
+    uint2 uv = floor(id.xy * srcTexSize / dstTexSize);
+    MipTex[id.xy] = float4(SrcTex[uv].r, 0, 0, 0);
+#if _PING_PONG_COPY
+    MipCopyTex[id.xy] = float4(SrcTex[uv].r, 0, 0, 0);
+#endif
+}
+
+[numthreads(8, 8, 1)]
+void DownSample(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < dstTexSize.x && id.y < dstTexSize.y)
+    {
+        uint2 coord = 2 * id.xy;
+#if _PING_PONG_COPY
+        float d1 = SrcTex[coord].r;
+        float d2 = SrcTex[coord + uint2(1, 0)].r;
+        float d3 = SrcTex[coord + uint2(0, 1)].r;
+        float d4 = SrcTex[coord + uint2(1, 1)].r;
+#else
+        float d1 = SrcTex.mips[Mip - 1][coord].r;
+        float d2 = SrcTex.mips[Mip - 1][coord + uint2(1, 0)].r;
+        float d3 = SrcTex.mips[Mip - 1][coord + uint2(0, 1)].r;
+        float d4 = SrcTex.mips[Mip - 1][coord + uint2(1, 1)].r;
+#endif
+
+#if defined(UNITY_REVERSED_Z)
+        float d = min(min(d1, d2), min(d3, d4));
+#else
+        float d = max(max(d1, d2), max(d3, d4));
+#endif
+
+        MipTex[id.xy] = float4(d, 0, 0, 0);
+#if _PING_PONG_COPY
+        MipCopyTex[id.xy] = float4(d, 0, 0, 0);
+#endif
+    }
+}

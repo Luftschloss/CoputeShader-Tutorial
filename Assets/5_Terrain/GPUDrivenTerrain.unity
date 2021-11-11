@@ -165,8 +165,7 @@ MonoBehaviour:
     type: 3}
   mat: {fileID: 2100000, guid: a792f678620bf7143812c829122b094c, type: 2}
   depthTextureGenerator: {fileID: 163804544}
-  depthGenerator: {fileID: 0}
-  Debug: 1
+  Debug: 0
 --- !u!4 &116977646
 Transform:
   m_ObjectHideFlags: 0
@@ -296,7 +295,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   m_LookSpeedController: 120
   m_LookSpeedMouse: 10
-  m_MoveSpeed: 10
+  m_MoveSpeed: 5
   m_MoveSpeedIncrement: 2.5
   m_Turbo: 10
 --- !u!1 &498357082
