@@ -4,64 +4,66 @@
     {
         _Color ("Color", Color) = (1,1,1,1)
         _MainTex ("Albedo (RGB)", 2D) = "white" {}
-        _Glossiness ("Smoothness", Range(0,1)) = 0.5
-        _Metallic ("Metallic", Range(0,1)) = 0.0
+        _Alpha("Alpha", Range(0, 1)) = 0.5
     }
     SubShader
     {
-        Tags { "RenderType"="Opaque" }
-        LOD 200
+         Pass {
 
+        Tags {"LightMode"="ForwardBase"}
+        LOD 200
+        //Blend SrcAlpha OneMinusSrcAlpha
+        ZWrite Off
         CGPROGRAM
         // Physically based Standard lighting model, and enable shadows on all light types
-        #pragma surface surf Standard fullforwardshadows
-        //可参考：https://docs.unity3d.com/Manual/GPUInstancing.html
-        //通过Graphics.DrawMeshInstancedIndirect绘制在vert及frag前都会执行该函数，可以在里面初始化Instance的属性
-        #pragma instancing_options procedural:setup
+        #pragma vertex vert
+        #pragma fragment frag
+        #pragma target 4.5
+
+        #include "UnityCG.cginc"
 
         sampler2D _MainTex;
 
-        struct Input
+        struct v2f
         {
-            float2 uv_MainTex;
+            float4 pos : SV_POSITION;
+            float2 uv_MainTex : TEXCOORD0;
         };
 
-        half _Glossiness;
-        half _Metallic;
-        fixed4 _Color;
+        half _Alpha;
+        half4 _Color;
 
-#ifdef UNITY_PROCEDURAL_INSTANCING_ENABLED
+        #if SHADER_TARGET >= 45
         StructuredBuffer<float4x4> rtsBuffer;
-#endif
-
+        #endif
 
         UNITY_INSTANCING_BUFFER_START(Props)
             // put more per-instance properties here
         UNITY_INSTANCING_BUFFER_END(Props)
 
-        
-        void setup()
+        v2f vert (appdata_full v, uint instanceID : SV_InstanceID)
         {
-            // init instance properties here
-#ifdef UNITY_PROCEDURAL_INSTANCING_ENABLED
-            unity_ObjectToWorld = rtsBuffer[unity_InstanceID];
+            #if SHADER_TARGET >= 45
+            unity_ObjectToWorld = rtsBuffer[instanceID];
             unity_WorldToObject = unity_ObjectToWorld;
             unity_WorldToObject._14_24_34 *= -1;
             unity_WorldToObject._11_22_33 = 1.0f / unity_WorldToObject._11_22_33;
-#endif
+            #endif
+
+            float3 worldPosition = mul(unity_ObjectToWorld, float4(v.vertex.xyz, 1.0)).xyz;
+            v2f o;
+            o.pos = mul(UNITY_MATRIX_VP, float4(worldPosition, 1.0f));
+            o.uv_MainTex = v.texcoord;
+            return o;
         }
 
-        void surf (Input IN, inout SurfaceOutputStandard o)
+        fixed4 frag (v2f i) : SV_Target
         {
-            // Albedo comes from a texture tinted by color
-            fixed4 c = tex2D (_MainTex, IN.uv_MainTex) * _Color;
-            o.Albedo = c.rgb;
-            // Metallic and smoothness come from slider variables
-            o.Metallic = _Metallic;
-            o.Smoothness = _Glossiness;
-            o.Alpha = c.a;
+            fixed4 albedo = tex2D(_MainTex, i.uv_MainTex);
+            fixed4 output = fixed4(albedo.rgb * _Color.rgb, albedo.w);
+            return output;
         }
         ENDCG
+        }
     }
-    FallBack "Diffuse"
 }

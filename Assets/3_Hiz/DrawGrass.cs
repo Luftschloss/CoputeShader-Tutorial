@@ -22,6 +22,9 @@ public class DrawGrass : MonoBehaviour
     /// 总的草的数目
     /// </summary>
     int grassCount;
+    uint lastVisibleGrassCount;
+    float nextStatsReadbackTime;
+    bool lastHizActive;
     int kernel;
     Camera mainCamera;
     [SerializeField]Terrain terrain;
@@ -65,8 +68,9 @@ public class DrawGrass : MonoBehaviour
     {
         kernel = compute.FindKernel("GrassCulling");
         compute.SetInt("grassCount", grassCount);
-        compute.SetInt("depthTextureSize", depthTextureGenerator.DepthTextureSize);
-        compute.SetBool("isOpenGL", Camera.main.projectionMatrix.Equals(GL.GetGPUProjectionMatrix(Camera.main.projectionMatrix, false)));
+        int depthTextureSize = depthTextureGenerator != null ? depthTextureGenerator.DepthTextureSize : Mathf.NextPowerOfTwo(Mathf.Max(Screen.width, Screen.height));
+        compute.SetInt("depthTextureSize", depthTextureSize);
+        compute.SetBool("isOpenGL", IsOpenGLClipSpace());
         compute.SetBuffer(kernel, "grassMatrixBuffer", grassMatrixBuffer);
 
         cullResultBufferId = Shader.PropertyToID("cullResultBuffer");
@@ -87,21 +91,44 @@ public class DrawGrass : MonoBehaviour
 
     void Update()
     {
+        lastHizActive = useHiz && depthTextureGenerator != null && depthTextureGenerator.DepthTexture != null;
+        if (compute != null)
+        {
+            compute.SetBool("useHiz", lastHizActive);
+        }
+
         if (useCulling)
         {
-            compute.SetTexture(kernel, hizTextureId, depthTextureGenerator.DepthTexture);
+            if (depthTextureGenerator != null && depthTextureGenerator.DepthTexture != null)
+            {
+                compute.SetTexture(kernel, hizTextureId, depthTextureGenerator.DepthTexture);
+            }
             compute.SetMatrix(vpMatrixId, GL.GetGPUProjectionMatrix(mainCamera.projectionMatrix, false) * mainCamera.worldToCameraMatrix);
             cullResultBuffer.SetCounterValue(0);
             compute.SetBuffer(kernel, cullResultBufferId, cullResultBuffer);
             compute.Dispatch(kernel, 1 + grassCount / 640, 1, 1);
             grassMaterial.SetBuffer(rtsBufferId, cullResultBuffer);
+
+            // 获取实际要渲染的数量
+            ComputeBuffer.CopyCount(cullResultBuffer, argsBuffer, sizeof(uint));
         }
         else
+        {
             grassMaterial.SetBuffer(rtsBufferId, grassMatrixBuffer);
+            args[1] = (uint)grassCount;
+            argsBuffer.SetData(args);
+            lastVisibleGrassCount = args[1];
+        }
 
-        //获取实际要渲染的数量
-        ComputeBuffer.CopyCount(cullResultBuffer, argsBuffer, sizeof(uint));
-        Graphics.DrawMeshInstancedIndirect(grassMesh, subMeshIndex, grassMaterial, new Bounds(Vector3.zero, new Vector3(1.0f, 1.0f, 1.0f)), argsBuffer);
+        if (useCulling && Time.unscaledTime >= nextStatsReadbackTime)
+        {
+            nextStatsReadbackTime = Time.unscaledTime + 0.25f;
+            argsBuffer.GetData(args);
+            lastVisibleGrassCount = args[1];
+        }
+        Graphics.DrawMeshInstancedIndirect(grassMesh, subMeshIndex, grassMaterial,
+            new Bounds(Vector3.zero, new Vector3(1000.0f, 1000.0f, 1000.0f)),
+            argsBuffer, 0, null, ShadowCastingMode.On, true, gameObject.layer, mainCamera);
     }
 
     /// <summary>
@@ -147,8 +174,47 @@ public class DrawGrass : MonoBehaviour
                 useHiz = true;
                 break;
         }
-        depthTextureGenerator.useHiz = useHiz;
-        compute.SetBool("useHiz", useHiz);
+        if (depthTextureGenerator != null)
+        {
+            depthTextureGenerator.useHiz = useCulling && depthTextureGenerator.DepthTexture != null;
+        }
+        if (compute != null)
+        {
+            compute.SetBool("useHiz", useHiz);
+        }
+    }
+
+    public void SetShowcaseCullingMode(GpuDrivenShowcaseCullingMode mode)
+    {
+        useCulling = mode.UsesFrustum();
+        useHiz = mode.UsesHiZ();
+        if (depthTextureGenerator != null)
+        {
+            depthTextureGenerator.useHiz = useCulling && depthTextureGenerator.DepthTexture != null;
+        }
+        if (compute != null)
+        {
+            compute.SetBool("useHiz", useHiz);
+        }
+    }
+
+    public void SetShowcaseDebugView(GpuDrivenShowcaseDebugView view)
+    {
+    }
+
+    public void CollectShowcaseStats(ref GpuDrivenShowcaseStats stats)
+    {
+        stats.foliageInstanceCount += grassCount;
+        stats.foliageVisibleInstanceCount += useCulling ? (int)lastVisibleGrassCount : grassCount;
+        stats.hizEnabled |= lastHizActive;
+    }
+
+    static bool IsOpenGLClipSpace()
+    {
+        var deviceType = SystemInfo.graphicsDeviceType;
+        return deviceType == UnityEngine.Rendering.GraphicsDeviceType.OpenGLCore ||
+               deviceType == UnityEngine.Rendering.GraphicsDeviceType.OpenGLES2 ||
+               deviceType == UnityEngine.Rendering.GraphicsDeviceType.OpenGLES3;
     }
 
     void OnDisable()

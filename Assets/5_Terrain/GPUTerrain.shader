@@ -7,6 +7,7 @@ Shader "GPU Driven/GPUTerrain"
 
         [MainTexture] _BaseMap("Albedo", 2D) = "white" {}
         [MainColor] _BaseColor("Color", Color) = (1,1,1,1)
+        [Toggle] _TerrainDebugColorMode("Terrain LOD Color Debug", Float) = 0.0
 
         _Cutoff("Alpha Cutoff", Range(0.0, 1.0)) = 0.5
 
@@ -64,6 +65,8 @@ Shader "GPU Driven/GPUTerrain"
         //  Forward pass. Shades all light in a single pass. GI + emission + Fog
         Pass
         {
+            Name "ForwardLit"
+            Tags { "LightMode" = "UniversalForward" }
             // Lightmode matches the ShaderPassName set in UniversalRenderPipeline.cs. SRPDefaultUnlit and passes with
             // no LightMode tag are also rendered by Universal Render Pipeline
 
@@ -76,7 +79,7 @@ Shader "GPU Driven/GPUTerrain"
         // All shaders must be compiled with HLSLcc and currently only gles is not using HLSLcc by default
         #pragma prefer_hlslcc gles
         #pragma exclude_renderers d3d11_9x
-        #pragma target 2.0
+        #pragma target 4.5
 
         // -------------------------------------
         // Material Keywords
@@ -97,6 +100,8 @@ Shader "GPU Driven/GPUTerrain"
         // Unity defined keywords
         #pragma multi_compile _ DIRLIGHTMAP_COMBINED
         #pragma multi_compile _ LIGHTMAP_ON
+        #pragma multi_compile _ _MAIN_LIGHT_SHADOWS _MAIN_LIGHT_SHADOWS_CASCADE _MAIN_LIGHT_SHADOWS_SCREEN
+        #pragma multi_compile_fragment _ _SHADOWS_SOFT _SHADOWS_SOFT_LOW _SHADOWS_SOFT_MEDIUM _SHADOWS_SOFT_HIGH
         #pragma multi_compile_fog
 
         //--------------------------------------
@@ -106,7 +111,9 @@ Shader "GPU Driven/GPUTerrain"
         #pragma vertex TerrainVertex
         #pragma fragment TerrainFragment
 
-        #include "UnityCG.cginc"
+        #define GPUTERRAIN_FORWARD_LIT_PASS 1
+        #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+        #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
         #include "GPUTerrainForwardBase.hlsl"
 
         ENDHLSL
@@ -125,18 +132,21 @@ Shader "GPU Driven/GPUTerrain"
         // All shaders must be compiled with HLSLcc and currently only gles is not using HLSLcc by default
         #pragma prefer_hlslcc gles
         #pragma exclude_renderers d3d11_9x
-        #pragma target 2.0
+        #pragma target 4.5
 
 
         #pragma multi_compile_shadowcaster
+        #pragma multi_compile_vertex _ _CASTING_PUNCTUAL_LIGHT_SHADOW
         //--------------------------------------
         // GPU Instancing
         #pragma multi_compile_instancing
 
-        #pragma vertex TerrainVertex
+        #pragma vertex TerrainShadowVertex
         #pragma fragment frag
 
-        #include "UnityCG.cginc"
+        #define GPUTERRAIN_SHADOW_CASTER_PASS 1
+        #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+        #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
         #include "GPUTerrainForwardBase.hlsl"
 
         float4 frag(Varyings i) : SV_Target

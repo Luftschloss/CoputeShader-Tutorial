@@ -32,15 +32,20 @@ public class MipmapGenerator : MonoBehaviour
             Shader.EnableKeyword("_PING_PONG_COPY");
         else
             Shader.DisableKeyword("_PING_PONG_COPY");
-        GenerateMipmap(size, size, mipCount);
+        //GenerateMipmap(size, size, mipCount);
+    }
 
+    private void Update()
+    {
+        GenerateMipmap(size, size, mipCount);
     }
 
     void GenerateMipmap(int width, int height, int mipmaps)
     {
         int dstWidth = width;
         int dstHeight = height;
-        mipRT = GenerateRWTexture(width, height, mipmaps);
+        if(mipRT == null)
+            mipRT = GenerateRWTexture(width, height, mipmaps);
         if (PingPong)
             copyMipRT = GenerateRWTexture(width, height, mipmaps);
         //BlitCopy

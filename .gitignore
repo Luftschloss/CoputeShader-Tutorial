@@ -6,3 +6,5 @@ Temp/
 Library/
 .vs/
 *.user
+.vscode/
+Logs/

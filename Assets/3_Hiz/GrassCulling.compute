@@ -31,6 +31,15 @@ bool IsInViewport(float4 clipSpacePosition)
 [numthreads(640, 1, 1)]
 void GrassCulling(uint3 id : SV_DispatchThreadID)
 {
+    if (id.x >= grassCount)
+        return;
+
+   /* float sum = 0;
+    for (int idx = 0; idx < 5000; idx++)
+    {
+        sum = sum + hizTexture.mips[0][int2(1, 5)].r;
+    }*/
+
     float4x4 grassMMatrix = grassMatrixBuffer[id.x];
     float4x4 grassMVP = mul(vpMatrix, grassMMatrix);
 

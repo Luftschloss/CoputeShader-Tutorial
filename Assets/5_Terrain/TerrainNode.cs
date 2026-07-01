@@ -23,21 +23,26 @@ public class TerrainNode
     }
 
     public TerrainNode(float4 r, int m)
+        : this(r, m, 0)
+    {
+    }
+
+    public TerrainNode(float4 r, int m, int terrainIndex)
     {
         rect = r;
         mip = m;
         index = -1;
-        info = new NodeInfo(new float4(r.x, r.y, r.z, r.w), m);
+        info = new NodeInfo(new float4(r.x, r.y, r.z, r.w), m, terrainIndex);
         if(mip > 0)
         {
             children = new TerrainNode[4];
             var halfX = r.z / 2;
             var halfY = r.w / 2;
             int subMip = m - 1;
-            children[0] = new TerrainNode(new float4(r.x, r.y, halfX, halfY), subMip);
-            children[1] = new TerrainNode(new float4(r.x + halfX, r.y, halfX, halfY), subMip);
-            children[2] = new TerrainNode(new float4(r.x, r.y + halfY, halfX, halfY), subMip);
-            children[3] = new TerrainNode(new float4(r.x + halfX, r.y + halfY, halfX, halfY), subMip);
+            children[0] = new TerrainNode(new float4(r.x, r.y, halfX, halfY), subMip, terrainIndex);
+            children[1] = new TerrainNode(new float4(r.x + halfX, r.y, halfX, halfY), subMip, terrainIndex);
+            children[2] = new TerrainNode(new float4(r.x, r.y + halfY, halfX, halfY), subMip, terrainIndex);
+            children[3] = new TerrainNode(new float4(r.x + halfX, r.y + halfY, halfX, halfY), subMip, terrainIndex);
         }
     }
 
@@ -49,6 +54,11 @@ public class TerrainNode
                 return this;
             else
             {
+                if (children == null)
+                {
+                    return null;
+                }
+
                 foreach (var child in children)
                 {
                     var active = child.GetActiveNode(center);
@@ -68,7 +78,8 @@ public class TerrainNode
     public void CollectNodeInfo(Vector2 center, List<NodeInfo> allNodeInfo, float[] lods)
     {
         // 非Root，剩下mip=0全部，mip>0的lodDistance外的，水平Distance作为LODDistance
-        if (mip >= 0 && (mip == 0 || (center - new Vector2(rect.x + rect.z * 0.5f, rect.y + rect.w * 0.5f)).magnitude >= lods[mip]))
+        float lodDistance = lods != null && mip >= 0 && mip < lods.Length ? lods[mip] : 0.0f;
+        if (mip >= 0 && (mip == 0 || (center - new Vector2(rect.x + rect.z * 0.5f, rect.y + rect.w * 0.5f)).magnitude >= lodDistance))
         {
             index = allNodeInfo.Count;
             allNodeInfo.Add(this.info);
@@ -76,6 +87,11 @@ public class TerrainNode
         else
         {
             index = -1;
+            if (children == null)
+            {
+                return;
+            }
+
             foreach (var child in children)
             {
                 child.CollectNodeInfo(center, allNodeInfo, lods);
@@ -91,11 +107,20 @@ public struct NodeInfo
     public float4 rect;
     public int mip;
     public int neighbor;
+    public int terrainIndex;
+    public int padding;
 
     public NodeInfo(float4 r, int m)
+        : this(r, m, 0)
+    {
+    }
+
+    public NodeInfo(float4 r, int m, int terrainIndex)
     {
         rect = r;
         mip = m;
         neighbor = 0;
+        this.terrainIndex = terrainIndex;
+        padding = 0;
     }
 }
