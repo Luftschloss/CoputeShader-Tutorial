@@ -25,6 +25,7 @@ public class DrawGrass : MonoBehaviour
     uint lastVisibleGrassCount;
     float nextStatsReadbackTime;
     bool lastHizActive;
+    bool debugStatsEnabled;
     int kernel;
     Camera mainCamera;
     [SerializeField]Terrain terrain;
@@ -120,7 +121,7 @@ public class DrawGrass : MonoBehaviour
             lastVisibleGrassCount = args[1];
         }
 
-        if (useCulling && Time.unscaledTime >= nextStatsReadbackTime)
+        if (debugStatsEnabled && useCulling && Time.unscaledTime >= nextStatsReadbackTime)
         {
             nextStatsReadbackTime = Time.unscaledTime + 0.25f;
             argsBuffer.GetData(args);
@@ -200,6 +201,7 @@ public class DrawGrass : MonoBehaviour
 
     public void SetShowcaseDebugView(GpuDrivenShowcaseDebugView view)
     {
+        debugStatsEnabled = view == GpuDrivenShowcaseDebugView.SceneWire;
     }
 
     public void CollectShowcaseStats(ref GpuDrivenShowcaseStats stats)

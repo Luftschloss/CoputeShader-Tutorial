@@ -8,16 +8,13 @@ public sealed class GpuDrivenShowcaseController : MonoBehaviour
     [Header("Runtime State")]
     [SerializeField] private GpuDrivenShowcaseCullingMode cullingMode = GpuDrivenShowcaseCullingMode.FrustumAndHiZ;
     [SerializeField] private GpuDrivenShowcaseDebugView debugView = GpuDrivenShowcaseDebugView.None;
-    [SerializeField] private bool terrainColorDebug;
 
     [Header("Input")]
     [SerializeField] private bool enableHotkeys = true;
     [SerializeField] private KeyCode noCullingKey = KeyCode.Alpha1;
     [SerializeField] private KeyCode frustumKey = KeyCode.Alpha2;
     [SerializeField] private KeyCode hizKey = KeyCode.Alpha3;
-    [SerializeField] private KeyCode lodDebugKey = KeyCode.Alpha4;
-    [SerializeField] private KeyCode hizDebugKey = KeyCode.Alpha5;
-    [SerializeField] private KeyCode terrainColorDebugKey = KeyCode.F6;
+    [SerializeField] private KeyCode debugViewKey = KeyCode.Alpha4;
     [SerializeField] private KeyCode refreshModulesKey = KeyCode.F5;
 
     [Header("Modules")]
@@ -30,7 +27,6 @@ public sealed class GpuDrivenShowcaseController : MonoBehaviour
 
     public GpuDrivenShowcaseCullingMode CullingMode => cullingMode;
     public GpuDrivenShowcaseDebugView DebugView => debugView;
-    public bool TerrainColorDebug => terrainColorDebug;
     public GpuDrivenShowcaseStats Stats => stats;
     public int ModuleCount => modules.Count;
 
@@ -48,6 +44,7 @@ public sealed class GpuDrivenShowcaseController : MonoBehaviour
 
     private void Start()
     {
+        NormalizeDebugView();
         ApplyModeToModules();
     }
 
@@ -63,6 +60,7 @@ public sealed class GpuDrivenShowcaseController : MonoBehaviour
 
     private void OnValidate()
     {
+        NormalizeDebugView();
         if (Application.isPlaying)
         {
             ApplyModeToModules();
@@ -89,17 +87,6 @@ public sealed class GpuDrivenShowcaseController : MonoBehaviour
 
         debugView = view;
         ApplyModeToModules();
-    }
-
-    public void SetTerrainColorDebug(bool enabled)
-    {
-        if (terrainColorDebug == enabled)
-        {
-            return;
-        }
-
-        terrainColorDebug = enabled;
-        ApplyTerrainColorDebugToModules();
     }
 
     public void RefreshModules()
@@ -170,15 +157,15 @@ public sealed class GpuDrivenShowcaseController : MonoBehaviour
         {
             modules[i].SetCullingMode(cullingMode);
             modules[i].SetDebugView(debugView);
-            modules[i].SetTerrainColorDebug(terrainColorDebug);
         }
     }
 
-    private void ApplyTerrainColorDebugToModules()
+    private void NormalizeDebugView()
     {
-        for (int i = 0; i < modules.Count; i++)
+        if (debugView != GpuDrivenShowcaseDebugView.None &&
+            debugView != GpuDrivenShowcaseDebugView.SceneWire)
         {
-            modules[i].SetTerrainColorDebug(terrainColorDebug);
+            debugView = GpuDrivenShowcaseDebugView.SceneWire;
         }
     }
 
@@ -197,22 +184,11 @@ public sealed class GpuDrivenShowcaseController : MonoBehaviour
             SetCullingMode(GpuDrivenShowcaseCullingMode.FrustumAndHiZ);
         }
 
-        if (Input.GetKeyDown(lodDebugKey))
+        if (Input.GetKeyDown(debugViewKey))
         {
-            SetDebugView(debugView == GpuDrivenShowcaseDebugView.Lod
+            SetDebugView(debugView == GpuDrivenShowcaseDebugView.SceneWire
                 ? GpuDrivenShowcaseDebugView.None
-                : GpuDrivenShowcaseDebugView.Lod);
-        }
-        else if (Input.GetKeyDown(hizDebugKey))
-        {
-            SetDebugView(debugView == GpuDrivenShowcaseDebugView.HiZ
-                ? GpuDrivenShowcaseDebugView.None
-                : GpuDrivenShowcaseDebugView.HiZ);
-        }
-
-        if (Input.GetKeyDown(terrainColorDebugKey))
-        {
-            SetTerrainColorDebug(!terrainColorDebug);
+                : GpuDrivenShowcaseDebugView.SceneWire);
         }
 
         if (Input.GetKeyDown(refreshModulesKey))
@@ -226,7 +202,6 @@ public sealed class GpuDrivenShowcaseController : MonoBehaviour
         stats = new GpuDrivenShowcaseStats
         {
             cpuFrameMs = Time.unscaledDeltaTime * 1000.0f,
-            hizTerrainDepthDrawCount = GpuDrivenHizFeature.LastTerrainDepthDrawCount,
             status = modules.Count == 0 ? "No showcase modules bound" : "Running"
         };
 
@@ -260,14 +235,6 @@ public sealed class GpuDrivenShowcaseController : MonoBehaviour
             if (target != null)
             {
                 target.SetShowcaseDebugView(view);
-            }
-        }
-
-        public void SetTerrainColorDebug(bool enabled)
-        {
-            if (target != null)
-            {
-                target.SetTerrainColorDebug(enabled);
             }
         }
 
@@ -305,10 +272,6 @@ public sealed class GpuDrivenShowcaseController : MonoBehaviour
             {
                 target.SetShowcaseDebugView(view);
             }
-        }
-
-        public void SetTerrainColorDebug(bool enabled)
-        {
         }
 
         public void CollectStats(ref GpuDrivenShowcaseStats stats)

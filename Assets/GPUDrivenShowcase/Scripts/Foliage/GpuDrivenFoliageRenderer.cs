@@ -13,7 +13,6 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
     private static readonly int CutoffId = Shader.PropertyToID("_Cutoff");
     private static readonly int AllMatricesId = Shader.PropertyToID("_AllMatrices");
     private static readonly int VisibleMatricesId = Shader.PropertyToID("_VisibleMatrices");
-    private static readonly int StatsBufferId = Shader.PropertyToID("_Stats");
     private static readonly int VPMatrixId = Shader.PropertyToID("_VPMatrix");
     private static readonly int HiZMapId = Shader.PropertyToID("_HiZMap");
     private static readonly int BoundsCenterId = Shader.PropertyToID("_BoundsCenter");
@@ -43,17 +42,13 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
 
     private readonly List<PrototypeRuntime> runtimes = new List<PrototypeRuntime>();
     private readonly uint[] args = new uint[5];
-    private readonly uint[] stats = new uint[StatsCount];
-    private readonly uint[] statsReset = new uint[StatsCount];
-    private ComputeBuffer statsBuffer;
     private MaterialPropertyBlock propertyBlock;
     private Camera mainCamera;
     private int cullKernel = -1;
     private float nextStatsReadbackTime;
     private int lastVisibleInstanceCount;
     private bool lastHizActive;
-
-    private const int StatsCount = 6;
+    private bool debugStatsEnabled;
 
     public string DisplayName => "GPU Foliage";
     public GpuDrivenFoliageData FoliageData => foliageData;
@@ -140,7 +135,7 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
         }
 
         DrawVisibleInstances(useCulling && cullingCompute != null && cullKernel >= 0);
-        ReadbackStatsIfNeeded(useCulling);
+        ReadbackStatsIfNeeded(useCulling && debugStatsEnabled);
     }
 
     public void Rebuild()
@@ -197,11 +192,6 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
             ResetArgs(runtime, matrices.Count);
             runtimes.Add(runtime);
         }
-
-        if (runtimes.Count > 0)
-        {
-            statsBuffer = new ComputeBuffer(StatsCount, sizeof(uint));
-        }
     }
 
     public void SetFoliageData(GpuDrivenFoliageData data)
@@ -220,10 +210,7 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
 
     public void SetDebugView(GpuDrivenShowcaseDebugView view)
     {
-    }
-
-    public void SetTerrainColorDebug(bool enabled)
-    {
+        debugStatsEnabled = view == GpuDrivenShowcaseDebugView.SceneWire;
     }
 
     public void CollectStats(ref GpuDrivenShowcaseStats showcaseStats)
@@ -235,11 +222,6 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
 
     private void DispatchCulling(bool useHiZ)
     {
-        if (statsBuffer != null)
-        {
-            statsBuffer.SetData(statsReset);
-        }
-
         Matrix4x4 vpMatrix = GL.GetGPUProjectionMatrix(mainCamera.projectionMatrix, false) * mainCamera.worldToCameraMatrix;
         cullingCompute.SetMatrix(VPMatrixId, vpMatrix);
         cullingCompute.SetInt(UseHiZId, useHiZ ? 1 : 0);
@@ -247,7 +229,6 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
         cullingCompute.SetInt(IsOpenGLId, IsOpenGLClipSpace() ? 1 : 0);
         cullingCompute.SetFloat(FrustumPaddingId, frustumPadding);
         cullingCompute.SetFloat(HiZDepthBiasId, hizDepthBias);
-        cullingCompute.SetBuffer(cullKernel, StatsBufferId, statsBuffer);
 
         if (depthTextureGenerator != null)
         {
@@ -274,7 +255,6 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
 
     private void DrawAllInstances()
     {
-        ClearStats();
         lastVisibleInstanceCount = 0;
         for (int i = 0; i < runtimes.Count; i++)
         {
@@ -329,11 +309,6 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
         {
             runtimes[i].argsBuffer.GetData(args);
             lastVisibleInstanceCount += (int)args[1];
-        }
-
-        if (statsBuffer != null)
-        {
-            statsBuffer.GetData(stats);
         }
     }
 
@@ -393,14 +368,6 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
         runtime.argsBuffer.SetData(args);
     }
 
-    private void ClearStats()
-    {
-        for (int i = 0; i < stats.Length; i++)
-        {
-            stats[i] = 0;
-        }
-    }
-
     private void OnDisable()
     {
         ReleaseRuntimeResources();
@@ -413,8 +380,6 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
             runtimes[i].Release();
         }
         runtimes.Clear();
-        statsBuffer?.Release();
-        statsBuffer = null;
     }
 
     private static bool IsOpenGLClipSpace()

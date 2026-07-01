@@ -10,9 +10,7 @@ public enum GpuDrivenShowcaseCullingMode
 public enum GpuDrivenShowcaseDebugView
 {
     None = 0,
-    Lod = 1,
-    HiZ = 2,
-    Bounds = 3
+    SceneWire = 1
 }
 
 public struct GpuDrivenShowcaseStats
@@ -20,21 +18,13 @@ public struct GpuDrivenShowcaseStats
     public float cpuFrameMs;
     public int terrainPatchCount;
     public int terrainVisiblePatchCount;
-    public int terrainCullingDispatchedPatchCount;
     public int terrainFrustumVisiblePatchCount;
     public int terrainFrustumRejectedPatchCount;
     public int terrainHiZTestedPatchCount;
     public int terrainHiZRejectedPatchCount;
-    public int terrainHiZSkippedPatchCount;
     public int foliageInstanceCount;
     public int foliageVisibleInstanceCount;
-    public int hizTerrainDepthDrawCount;
-    public bool terrainDepthOccluderEnabled;
-    public bool terrainColorDebugEnabled;
-    public bool terrainShadowCasterEnabled;
-    public bool terrainShadowReceiverEnabled;
     public bool hizEnabled;
-    public string depthTextureDescription;
     public string status;
 }
 
@@ -43,7 +33,6 @@ public interface IGpuDrivenShowcaseModule
     string DisplayName { get; }
     void SetCullingMode(GpuDrivenShowcaseCullingMode mode);
     void SetDebugView(GpuDrivenShowcaseDebugView view);
-    void SetTerrainColorDebug(bool enabled);
     void CollectStats(ref GpuDrivenShowcaseStats stats);
 }
 
@@ -81,12 +70,8 @@ public static class GpuDrivenShowcaseModeUtility
         {
             case GpuDrivenShowcaseDebugView.None:
                 return "Off";
-            case GpuDrivenShowcaseDebugView.Lod:
-                return "LOD";
-            case GpuDrivenShowcaseDebugView.HiZ:
-                return "Hi-Z";
-            case GpuDrivenShowcaseDebugView.Bounds:
-                return "Bounds";
+            case GpuDrivenShowcaseDebugView.SceneWire:
+                return "Scene Wire";
             default:
                 return view.ToString();
         }

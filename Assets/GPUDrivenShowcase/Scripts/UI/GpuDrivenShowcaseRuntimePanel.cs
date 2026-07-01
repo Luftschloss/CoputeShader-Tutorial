@@ -4,17 +4,10 @@ public sealed class GpuDrivenShowcaseRuntimePanel : MonoBehaviour
 {
     [SerializeField] private GpuDrivenShowcaseController controller;
     [SerializeField] private bool visible = true;
+    [SerializeField] private bool expanded = true;
     [SerializeField] private KeyCode toggleKey = KeyCode.F1;
-    [SerializeField] private Rect windowRect = new Rect(16, 16, 380, 455);
-    [SerializeField] private Rect hizPreviewRect = new Rect(364, 16, 256, 256);
-    [SerializeField] private Shader hizDebugShader;
-    [SerializeField] private int hizDebugMip;
-    [SerializeField] private bool hizDebugLinearize = true;
-
-    private Material hizDebugMaterial;
-    private DepthTextureGenerator cachedDepthGenerator;
-    private static readonly int MipId = Shader.PropertyToID("_Mip");
-    private static readonly int LinearizeId = Shader.PropertyToID("_Linearize");
+    [SerializeField] private Rect windowRect = new Rect(16, 16, 360, 260);
+    [SerializeField] private Rect collapsedRect = new Rect(16, 16, 176, 30);
 
     private void Awake()
     {
@@ -22,18 +15,13 @@ public sealed class GpuDrivenShowcaseRuntimePanel : MonoBehaviour
         {
             controller = GpuDrivenShowcaseController.Instance;
         }
-
-        if (hizDebugShader == null)
-        {
-            hizDebugShader = Shader.Find("GPU Driven/Hi-Z Debug View");
-        }
     }
 
     private void Update()
     {
         if (Input.GetKeyDown(toggleKey))
         {
-            visible = !visible;
+            expanded = !expanded;
         }
     }
 
@@ -49,8 +37,18 @@ public sealed class GpuDrivenShowcaseRuntimePanel : MonoBehaviour
             controller = GpuDrivenShowcaseController.Instance;
         }
 
+        if (!expanded)
+        {
+            collapsedRect.x = windowRect.x;
+            collapsedRect.y = windowRect.y;
+            if (GUI.Button(collapsedRect, "GPU Driven Showcase >"))
+            {
+                expanded = true;
+            }
+            return;
+        }
+
         windowRect = GUILayout.Window(GetInstanceID(), windowRect, DrawWindow, "GPU Driven Showcase");
-        DrawHizPreview();
     }
 
     private void DrawWindow(int id)
@@ -63,11 +61,17 @@ public sealed class GpuDrivenShowcaseRuntimePanel : MonoBehaviour
             return;
         }
 
+        GUILayout.BeginHorizontal();
+        GUILayout.FlexibleSpace();
+        if (GUILayout.Button("Collapse", GUILayout.Width(84), GUILayout.Height(22)))
+        {
+            expanded = false;
+        }
+        GUILayout.EndHorizontal();
+
         DrawModeButtons();
         GUILayout.Space(8);
         DrawDebugButtons();
-        GUILayout.Space(8);
-        DrawTerrainOptions();
         GUILayout.Space(8);
         DrawStats();
         GUILayout.Space(8);
@@ -102,9 +106,7 @@ public sealed class GpuDrivenShowcaseRuntimePanel : MonoBehaviour
         GUILayout.Label("Debug View");
         GUILayout.BeginHorizontal();
         DrawDebugButton(GpuDrivenShowcaseDebugView.None, "Off");
-        DrawDebugButton(GpuDrivenShowcaseDebugView.Lod, "4 LOD");
-        DrawDebugButton(GpuDrivenShowcaseDebugView.HiZ, "5 Hi-Z");
-        DrawDebugButton(GpuDrivenShowcaseDebugView.Bounds, "Bounds");
+        DrawDebugButton(GpuDrivenShowcaseDebugView.SceneWire, "4 Scene Wire");
         GUILayout.EndHorizontal();
     }
 
@@ -120,129 +122,40 @@ public sealed class GpuDrivenShowcaseRuntimePanel : MonoBehaviour
         GUI.enabled = previousEnabled;
     }
 
-    private void DrawTerrainOptions()
-    {
-        bool terrainColorDebug = GUILayout.Toggle(controller.TerrainColorDebug, "Terrain LOD Color Debug (F6)");
-        if (terrainColorDebug != controller.TerrainColorDebug)
-        {
-            controller.SetTerrainColorDebug(terrainColorDebug);
-        }
-    }
-
     private void DrawStats()
     {
         GpuDrivenShowcaseStats stats = controller.Stats;
+        bool debugStats = controller.DebugView == GpuDrivenShowcaseDebugView.SceneWire;
         GUILayout.Label("Stats");
         GUILayout.Label("Mode: " + controller.CullingMode.ToDisplayName());
         GUILayout.Label("Debug: " + controller.DebugView.ToDisplayName());
-        GUILayout.Label("Terrain Color Debug: " + (stats.terrainColorDebugEnabled ? "On" : "Off"));
-        GUILayout.Label("Terrain Shadow: cast " + (stats.terrainShadowCasterEnabled ? "On" : "Off")
-            + " / receive " + (stats.terrainShadowReceiverEnabled ? "On" : "Off"));
-        GUILayout.Label("Modules: " + controller.ModuleCount);
         GUILayout.Label("CPU Frame: " + stats.cpuFrameMs.ToString("0.00") + " ms");
         GUILayout.Label("Hi-Z: " + (stats.hizEnabled ? "On" : "Off"));
-        if (!string.IsNullOrEmpty(stats.depthTextureDescription))
+        GUILayout.Label("Terrain Patches: " + stats.terrainPatchCount);
+        GUILayout.Label("Foliage Instances: " + stats.foliageInstanceCount);
+
+        if (!debugStats)
         {
-            GUILayout.Label("DepthTexture: " + stats.depthTextureDescription);
+            GUILayout.Label("Status: " + stats.status);
+            return;
         }
-        GUILayout.Label("Terrain Patches: " + stats.terrainVisiblePatchCount + " / " + stats.terrainPatchCount);
+
+        GUILayout.Label("Visible Patches: " + stats.terrainVisiblePatchCount + " / " + stats.terrainPatchCount);
+        GUILayout.Label("Visible Foliage: " + stats.foliageVisibleInstanceCount + " / " + stats.foliageInstanceCount);
         if (stats.hizEnabled)
         {
-            GUILayout.Label("Terrain Depth: " + (stats.terrainDepthOccluderEnabled ? "On" : "Off")
-                + " / draws " + stats.hizTerrainDepthDrawCount);
-            GUILayout.Label("Terrain Culling: dispatched " + stats.terrainCullingDispatchedPatchCount
-                + " / frustum " + stats.terrainFrustumVisiblePatchCount
+            GUILayout.Label("Terrain Culling: frustum " + stats.terrainFrustumVisiblePatchCount
                 + " / outside " + stats.terrainFrustumRejectedPatchCount);
-            GUILayout.Label("Hi-Z Terrain: rejected " + stats.terrainHiZRejectedPatchCount
-                + " / tested " + stats.terrainHiZTestedPatchCount
-                + " / skipped " + stats.terrainHiZSkippedPatchCount);
+            GUILayout.Label("Terrain Hi-Z: rejected " + stats.terrainHiZRejectedPatchCount
+                + " / tested " + stats.terrainHiZTestedPatchCount);
         }
-        GUILayout.Label("Foliage Instances: " + stats.foliageVisibleInstanceCount + " / " + stats.foliageInstanceCount);
         GUILayout.Label("Status: " + stats.status);
     }
 
     private void DrawHelp()
     {
         GUILayout.Label("Hotkeys");
-        GUILayout.Label("1 None | 2 Frustum | 3 Hi-Z | 4 LOD | 5 Hi-Z View");
-        GUILayout.Label("F1 Panel | F5 Rebind | F6 Terrain Color | RMB + WASDQE Fly");
-    }
-
-    private void DrawHizPreview()
-    {
-        if (controller == null || controller.DebugView != GpuDrivenShowcaseDebugView.HiZ)
-        {
-            return;
-        }
-
-        RenderTexture hizTexture = GetHizTexture();
-        if (hizTexture == null)
-        {
-            return;
-        }
-
-        Material material = GetHizDebugMaterial();
-        if (material != null)
-        {
-            int mip = GetClampedHizMip(hizTexture);
-            material.SetFloat(MipId, mip);
-            material.SetFloat(LinearizeId, hizDebugLinearize ? 1.0f : 0.0f);
-            Graphics.DrawTexture(hizPreviewRect, hizTexture, material);
-        }
-        else
-        {
-            GUI.DrawTexture(hizPreviewRect, hizTexture, ScaleMode.ScaleToFit, false);
-        }
-
-        GUI.Box(hizPreviewRect, GUIContent.none);
-        GUI.Label(new Rect(hizPreviewRect.x + 8.0f, hizPreviewRect.y + 6.0f, hizPreviewRect.width - 16.0f, 20.0f),
-            "Hi-Z mip " + GetClampedHizMip(hizTexture));
-    }
-
-    private int GetClampedHizMip(RenderTexture hizTexture)
-    {
-        int maxMip = Mathf.Max(0, (int)Mathf.Log(hizTexture.width, 2) - 1);
-        return Mathf.Clamp(hizDebugMip, 0, maxMip);
-    }
-
-    private RenderTexture GetHizTexture()
-    {
-        if (cachedDepthGenerator == null)
-        {
-            Camera mainCamera = Camera.main;
-            if (mainCamera != null)
-            {
-                cachedDepthGenerator = mainCamera.GetComponent<DepthTextureGenerator>();
-            }
-
-            if (cachedDepthGenerator == null)
-            {
-                cachedDepthGenerator = FindObjectOfType<DepthTextureGenerator>();
-            }
-        }
-
-        return cachedDepthGenerator != null ? cachedDepthGenerator.DepthTexture : null;
-    }
-
-    private Material GetHizDebugMaterial()
-    {
-        if (hizDebugMaterial == null && hizDebugShader != null)
-        {
-            hizDebugMaterial = new Material(hizDebugShader)
-            {
-                hideFlags = HideFlags.HideAndDontSave
-            };
-        }
-
-        return hizDebugMaterial;
-    }
-
-    private void OnDestroy()
-    {
-        if (hizDebugMaterial != null)
-        {
-            Destroy(hizDebugMaterial);
-            hizDebugMaterial = null;
-        }
+        GUILayout.Label("1 None | 2 Frustum | 3 Hi-Z | 4 Scene Wire");
+        GUILayout.Label("F1 Panel | F5 Rebind | RMB + WASDQE Fly");
     }
 }

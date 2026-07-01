@@ -24,6 +24,7 @@ float4 _HizMapSize;
 uint _InstanceCount;
 bool _UseHiZ;
 bool _WriteDebugResult;
+bool _CollectStats;
 StructuredBuffer<NodeInfoData> _AllInstancesPosWSBuffer;
 AppendStructuredBuffer<NodeInfoData> result;
 AppendStructuredBuffer<uint> _VisibleInstancesOnlyPosWSIDBuffer;
@@ -150,7 +151,8 @@ void CullTerrain(uint3 id : SV_DispatchThreadID)
     if (id.x >= _InstanceCount)
         return;
 
-    InterlockedAdd(_HiZStatsBuffer[3], 1);
+    if (_CollectStats)
+        InterlockedAdd(_HiZStatsBuffer[3], 1);
 
     NodeInfoData nodeInfo = _AllInstancesPosWSBuffer[id.x];
     float4 nowRect = nodeInfo.rect;
@@ -184,11 +186,13 @@ void CullTerrain(uint3 id : SV_DispatchThreadID)
 
     if (outsideLeft || outsideRight || outsideBottom || outsideTop || outsideNear || outsideFar)
     {
-        InterlockedAdd(_HiZStatsBuffer[5], 1);
+        if (_CollectStats)
+            InterlockedAdd(_HiZStatsBuffer[5], 1);
         return;
     }
 
-    InterlockedAdd(_HiZStatsBuffer[4], 1);
+    if (_CollectStats)
+        InterlockedAdd(_HiZStatsBuffer[4], 1);
 
     if (_UseHiZ)
     {
@@ -196,16 +200,19 @@ void CullTerrain(uint3 id : SV_DispatchThreadID)
         bounds.minPosition = float3(minPos.x, minHeight, minPos.y);
         bounds.maxPosition = float3(maxPos.x, maxHeight, maxPos.y);
 
-        InterlockedAdd(_HiZStatsBuffer[0], 1);
+        if (_CollectStats)
+            InterlockedAdd(_HiZStatsBuffer[0], 1);
         if (HizOcclusionCull(bounds))
         {
-            InterlockedAdd(_HiZStatsBuffer[1], 1);
+            if (_CollectStats)
+                InterlockedAdd(_HiZStatsBuffer[1], 1);
             return;
         }
     }
     else
     {
-        InterlockedAdd(_HiZStatsBuffer[2], 1);
+        if (_CollectStats)
+            InterlockedAdd(_HiZStatsBuffer[2], 1);
     }
 
     _VisibleInstancesOnlyPosWSIDBuffer.Append(id.x);

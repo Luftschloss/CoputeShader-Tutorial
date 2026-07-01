@@ -26,6 +26,7 @@ public class GPUTerrain : MonoBehaviour
     private static readonly int HizCameraMatrixVPId = Shader.PropertyToID("_HizCameraMatrixVP");
     private static readonly int HizMapId = Shader.PropertyToID("_HizMap");
     private static readonly int HizMapSizeId = Shader.PropertyToID("_HizMapSize");
+    private static readonly int CollectStatsId = Shader.PropertyToID("_CollectStats");
     private const string ReverseZKeyword = "_REVERSE_Z";
 
     public static int ActiveTerrainCount => ActiveTerrains.Count;
@@ -62,6 +63,9 @@ public class GPUTerrain : MonoBehaviour
     [SerializeField] private ComputeShader cullingComputeShader;
     [SerializeField] private Material mat;
 
+    [Header("Debug")]
+    [SerializeField] private bool terrainColorDebug = false;
+
     public DepthTextureGenerator depthTextureGenerator;
     public bool DebugGizmos;
 
@@ -95,15 +99,12 @@ public class GPUTerrain : MonoBehaviour
     private int cullTerrainKernel = -1;
     private Camera camera;
     private GpuDrivenShowcaseCullingMode showcaseCullingMode = GpuDrivenShowcaseCullingMode.FrustumAndHiZ;
-    private GpuDrivenShowcaseDebugView showcaseDebugView = GpuDrivenShowcaseDebugView.None;
-    private bool terrainColorDebug;
     private bool lastHizActive;
     private bool forceLodRebuild = true;
     private bool terrainResourcesDirty;
     private bool terrainGpuBindingsDirty = true;
     private bool nodeIdBufferDirty = true;
     private uint lastVisiblePatchCount;
-    private float nextStatsReadbackTime;
     private Vector2 lastLodBuildCameraXZ;
     private MaterialPropertyBlock hizDepthProperties;
     private MaterialPropertyBlock shadowProperties;
@@ -175,8 +176,9 @@ public class GPUTerrain : MonoBehaviour
         bool useCulling = showcaseCullingMode != GpuDrivenShowcaseCullingMode.None;
         bool wantsHiZ = WantsHiZ();
         bool useHiz = BindHiZTextureIfReady(out Vector4 hizMapSize, out Matrix4x4 hizMatrixVP, out Vector3 hizCameraPositionWS);
+        bool collectDebugStats = DebugGizmos;
         lastHizActive = useHiz;
-        if (!useHiz)
+        if (!useHiz || !collectDebugStats)
         {
             ClearHiZStats();
         }
@@ -199,12 +201,13 @@ public class GPUTerrain : MonoBehaviour
             cullingComputeShader.SetVector(HizMapSizeId, hizMapSize);
         }
         cullingComputeShader.SetBool("_UseHiZ", useHiz);
-        cullingComputeShader.SetBool("_WriteDebugResult", DebugGizmos);
+        cullingComputeShader.SetBool("_WriteDebugResult", collectDebugStats);
+        cullingComputeShader.SetBool(CollectStatsId, collectDebugStats);
         ApplyMaterialState(useCulling);
 
         if (useCulling)
         {
-            if (hizStatsBuffer != null)
+            if (collectDebugStats && hizStatsBuffer != null)
             {
                 EnsureHiZStatsResetCapacity();
                 hizStatsBuffer.SetData(hizStatsResetUpload);
@@ -221,7 +224,7 @@ public class GPUTerrain : MonoBehaviour
             ClearHiZStats();
         }
 
-        ReadBackDebugStats(useCulling, useHiz);
+        ReadBackDebugStats(useCulling);
 #if UNITY_EDITOR
         Camera drawCamera = null;
 #else
@@ -730,6 +733,7 @@ public class GPUTerrain : MonoBehaviour
         cullingComputeShader.SetInt("_InstanceCount", activeNodeCount);
         cullingComputeShader.SetBool("_UseHiZ", IsHiZReady());
         cullingComputeShader.SetBool("_WriteDebugResult", DebugGizmos);
+        cullingComputeShader.SetBool(CollectStatsId, DebugGizmos);
         mat.SetBuffer("_AllInstancesTransformBuffer", allInstancePosBuffer);
         ApplyMaterialState(showcaseCullingMode != GpuDrivenShowcaseCullingMode.None);
         terrainGpuBindingsDirty = false;
@@ -1081,30 +1085,23 @@ public class GPUTerrain : MonoBehaviour
             ShadowCastingMode.ShadowsOnly, false, gameObject.layer, null);
     }
 
-    private void ReadBackDebugStats(bool useCulling, bool useHiz)
+    private void ReadBackDebugStats(bool useCulling)
     {
-        bool readBackStats = DebugGizmos || Time.unscaledTime >= nextStatsReadbackTime;
-        if (readBackStats)
+        if (!DebugGizmos)
         {
-            nextStatsReadbackTime = Time.unscaledTime + 0.25f;
-        }
-
-        if (!readBackStats)
-        {
+            debugVisibleNodeCount = 0;
             return;
         }
 
         argsBuffer.GetData(args);
         lastVisiblePatchCount = args[1];
-        if (useHiz && hizStatsBuffer != null)
+        if (useCulling && hizStatsBuffer != null)
         {
             hizStatsBuffer.GetData(hizStats);
         }
-
-        if (!DebugGizmos)
+        else
         {
-            debugVisibleNodeCount = 0;
-            return;
+            ClearHiZStats();
         }
 
         int visibleCount = (int)args[1];
@@ -1167,49 +1164,38 @@ public class GPUTerrain : MonoBehaviour
 
     public void SetShowcaseDebugView(GpuDrivenShowcaseDebugView view)
     {
-        showcaseDebugView = view;
-        DebugGizmos = view == GpuDrivenShowcaseDebugView.Lod ||
-                      view == GpuDrivenShowcaseDebugView.HiZ ||
-                      view == GpuDrivenShowcaseDebugView.Bounds;
+        DebugGizmos = view == GpuDrivenShowcaseDebugView.SceneWire;
+        if (!DebugGizmos)
+        {
+            debugVisibleNodeCount = 0;
+            ClearHiZStats();
+        }
         terrainGpuBindingsDirty = true;
-    }
-
-    public void SetTerrainColorDebug(bool enabled)
-    {
-        terrainColorDebug = enabled;
-        ApplyMaterialState(showcaseCullingMode != GpuDrivenShowcaseCullingMode.None);
     }
 
     public void CollectShowcaseStats(ref GpuDrivenShowcaseStats stats)
     {
         stats.terrainPatchCount += activeNodeCount;
+        stats.hizEnabled |= lastHizActive;
+
+        if (!DebugGizmos)
+        {
+            return;
+        }
+
         stats.terrainVisiblePatchCount += (int)lastVisiblePatchCount;
         stats.terrainHiZTestedPatchCount += (int)hizStats[0];
         stats.terrainHiZRejectedPatchCount += (int)hizStats[1];
-        stats.terrainHiZSkippedPatchCount += (int)hizStats[2];
-        stats.terrainCullingDispatchedPatchCount += (int)hizStats[3];
         stats.terrainFrustumVisiblePatchCount += (int)hizStats[4];
         stats.terrainFrustumRejectedPatchCount += (int)hizStats[5];
-        stats.terrainDepthOccluderEnabled |= writeTerrainDepthToHiZ && GpuDrivenHizFeature.IsTerrainDepthInjectionEnabled;
-        stats.terrainColorDebugEnabled |= terrainColorDebug;
-        stats.terrainShadowCasterEnabled |= castShadowMap;
-        stats.terrainShadowReceiverEnabled |= receiveShadowMap;
-        if (depthTextureGenerator != null)
-        {
-            stats.depthTextureDescription = depthTextureGenerator.DepthTextureDescription;
-        }
-        stats.hizEnabled |= lastHizActive;
-        if (terrainColorDebug)
-        {
-            stats.status = "Terrain LOD color debug active";
-        }
-        else if (showcaseDebugView == GpuDrivenShowcaseDebugView.Lod)
-        {
-            stats.status = "LOD debug active";
-        }
-        else if (lastHizActive)
+
+        if (lastHizActive)
         {
             stats.status = "Hi-Z rejected " + hizStats[1] + " terrain patches";
+        }
+        else
+        {
+            stats.status = "Scene wire debug active";
         }
     }
 

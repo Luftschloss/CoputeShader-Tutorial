@@ -2,7 +2,6 @@
 
 StructuredBuffer<float4x4> _AllMatrices;
 AppendStructuredBuffer<float4x4> _VisibleMatrices;
-RWStructuredBuffer<uint> _Stats;
 Texture2D<float4> _HiZMap;
 
 float4x4 _VPMatrix;
@@ -91,8 +90,6 @@ void CullFoliage(uint3 id : SV_DispatchThreadID)
     if (id.x >= _InstanceCount)
         return;
 
-    InterlockedAdd(_Stats[3], 1);
-
     float4x4 localToWorld = _AllMatrices[id.x];
     float3 minLocal = _BoundsCenter - _BoundsExtents;
     float3 maxLocal = _BoundsCenter + _BoundsExtents;
@@ -129,16 +126,11 @@ void CullFoliage(uint3 id : SV_DispatchThreadID)
 
     if (outsideLeft || outsideRight || outsideBottom || outsideTop || outsideNear || outsideFar)
     {
-        InterlockedAdd(_Stats[5], 1);
         return;
     }
 
-    InterlockedAdd(_Stats[4], 1);
-
     if (_UseHiZ == 0 || _DepthTextureSize == 0 || skipHiZ || !hasProjectedVertex)
     {
-        if (_UseHiZ != 0)
-            InterlockedAdd(_Stats[2], 1);
         _VisibleMatrices.Append(localToWorld);
         return;
     }
@@ -165,13 +157,11 @@ void CullFoliage(uint3 id : SV_DispatchThreadID)
     float d3 = _HiZMap.mips[mipmapLevel][uint2(pixelLeftBottom.x, pixelRightTop.y)].r;
     float d4 = _HiZMap.mips[mipmapLevel][uint2(pixelRightTop.x, pixelLeftBottom.y)].r;
 
-    InterlockedAdd(_Stats[0], 1);
     if (_UseReversedZ != 0)
     {
         float depthInTexture = min(min(d1, d2), min(d3, d4));
         if (depthInTexture > depth)
         {
-            InterlockedAdd(_Stats[1], 1);
             return;
         }
     }
@@ -180,7 +170,6 @@ void CullFoliage(uint3 id : SV_DispatchThreadID)
         float depthInTexture = max(max(d1, d2), max(d3, d4));
         if (depthInTexture < depth)
         {
-            InterlockedAdd(_Stats[1], 1);
             return;
         }
     }

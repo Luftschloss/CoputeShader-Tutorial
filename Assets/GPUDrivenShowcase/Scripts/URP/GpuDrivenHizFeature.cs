@@ -4,13 +4,10 @@ using UnityEngine.Rendering.Universal;
 
 public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
 {
-    public static int LastTerrainDepthDrawCount { get; private set; }
-
     [SerializeField] private ComputeShader hizMapCompute;
     [SerializeField] private RenderPassEvent passEvent = RenderPassEvent.BeforeRenderingTransparents;
 
     private GpuDrivenHizPass pass;
-    public static bool IsTerrainDepthInjectionEnabled { get; private set; }
     private RenderPassEvent EffectivePassEvent => passEvent;
 
     public override void Create()
@@ -41,8 +38,6 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
     public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
     {
         pass?.ClearSetup();
-        LastTerrainDepthDrawCount = 0;
-        IsTerrainDepthInjectionEnabled = false;
 
         if (pass == null || !pass.IsValid)
         {
@@ -67,8 +62,6 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
 
     protected override void Dispose(bool disposing)
     {
-        LastTerrainDepthDrawCount = 0;
-        IsTerrainDepthInjectionEnabled = false;
         pass?.Dispose();
         pass = null;
     }
@@ -131,7 +124,6 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
 
         public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
         {
-            LastTerrainDepthDrawCount = 0;
             RenderTexture depthTexture = generator != null ? generator.DepthTexture : null;
             if (depthTexture == null)
             {
