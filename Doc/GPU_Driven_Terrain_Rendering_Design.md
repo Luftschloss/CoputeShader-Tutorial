@@ -1,17 +1,21 @@
-# GPU Driven Terrain Rendering Design
+# GPU Driven Terrain 渲染与着色方案
 
-本文档说明 GPUDrivenTerrain 后续渲染侧的数据补全和优化方案。
+更新时间：2026-07-02
 
-核心前提：
+本文基于当前工程实现，重新评估 `GPUDrivenTerrain` 的渲染/着色方案。旧版文档中有一些方向仍然成立，但也有部分内容已经被当前实现覆盖，需要调整优先级。
 
-- 地形编辑仍以 Unity Terrain / Terrain Tools 为主。
-- Unity `TerrainData` 是权威数据源，负责高度、splat/control、holes、TerrainLayer、碰撞、烘焙和美术工作流。
-- GPU patch renderer 只做运行时渲染镜像和加速结构，不另起一套地编数据格式。
-- 当前实现保留：CPU quadtree LOD、compute culling、Hi-Z、`DrawMeshInstancedIndirect` patch 绘制。
+核心结论：
 
-## Current Baseline
+- 地形编辑仍然以 Unity Terrain / Terrain Tools 为主。
+- `GpuTerrainBakedData` 是运行时地形渲染的数据源。
+- 运行时 `GPUTerrain` 只消费离线 Bake 数据，不再从 Unity `TerrainData` 重建地形节点。
+- 当前阶段应优先补齐 TerrainLayer、control/splat、holes 和 URP Lit 着色，而不是继续重构 LOD/Culling 基础结构。
+- 运行时 dirty sync 可以作为后续能力，不应作为当前渲染白模问题的前置条件。
+- 阶段 2 的 RVT + SVT 混合方案见 `Doc/GPU_Driven_Terrain_RVT_SVT_Hybrid_Design.md`，建议作为阶段 1 直接 TerrainLayer 混合稳定后的材质缓存和远景流送扩展。
 
-当前实现位于：
+## 当前实现现状
+
+主要文件：
 
 - `Assets/5_Terrain/GPUTerrain.cs`
 - `Assets/5_Terrain/GpuTerrainBakedData.cs`
@@ -20,146 +24,241 @@
 - `Assets/5_Terrain/GPUTerrain.shader`
 - `Assets/5_Terrain/GPUTerrainForwardBase.hlsl`
 - `Assets/5_Terrain/GPUTerrainHiZDepth.shader`
+- `Assets/GPUDrivenShowcase/Scripts/URP/GpuDrivenHizFeature.cs`
 
-现有数据已经包含：
+当前 Bake 数据已经包含：
 
-- Terrain 列表和每个 Terrain 的 world origin / size。
-- heightmap `Texture2DArray`。
-- normal `Texture2DArray`。
-- world-space patch rect。
-- patch LOD mip。
-- neighbor mask，用于 LOD seam snapping。
-- visible patch append buffer。
-- indirect args buffer。
-- terrain Hi-Z depth draw path。
+- Terrain tile 的 world origin / size。
+- quadtree patch nodes。
+- root node indices。
+- patch world rect。
+- patch `heightMinMax`，已经在 Editor Bake 阶段预生成。
+- patch mip / LOD level。
+- parent / child node index。
+- height `Texture2DArray`，当前格式为 `RHalf`。
+- normal `Texture2DArray`，当前格式为 `RGB24`。
 
-当前主要缺口：
-
-- 没有接入 Unity TerrainLayer、control/splat、holes、mask map、法线细节，导致渲染仍接近白模。
-- height/normal 通过 CPU 逐像素采样生成，适合初始化，不适合 Terrain 编辑后的频繁同步。
-- culling bounds 只在 compute 中采样 9 个高度点，遇到高频山体时不够稳定。
-- patch 数据只满足绘制和剔除，还没有材质、min/max、误差、debug 统计等扩展字段。
-- `Graphics.DrawMeshInstancedIndirect` 在 Unity 2022.3 文档中已标记 obsolete，新代码推荐 `Graphics.RenderMeshIndirect`。
-
-## Recommended Direction
-
-采用“Unity Terrain authoring + GPU patch rendering mirror”的方案。
+当前运行时渲染流程：
 
 ```text
-Unity TerrainData
-  heightmapTexture
-  alphamapTextures
-  holesTexture
-  terrainLayers
-  size/origin
-  editor changes
-        |
-        v
-GpuTerrainDataBridge
-  dirty tracking
-  GPU resource copy/update
-  layer palette build
-  patch metadata build
-        |
-        v
-GpuTerrainRenderer
-  LOD selection
-  frustum culling
-  Hi-Z culling
-  indirect draw
-        |
-        v
-GpuTerrainLit.shader
-  height displacement
-  splat blend
-  normal/mask/PBR lighting
-  debug views
+GpuTerrainBakedData
+  -> CPU quadtree LOD 选择 active nodes
+  -> 生成 neighbor seam mask
+  -> 上传 active node buffer
+  -> TerrainCulling.compute 做 frustum + Hi-Z 剔除
+  -> visible patch id append buffer
+  -> indirect args
+  -> Graphics.DrawMeshInstancedIndirect
+  -> GPUTerrain.shader ForwardLit / ShadowCaster
 ```
 
-这个方向和当前工程最匹配。它保留 Unity Terrain 的地编能力，同时把运行时地形主体绘制交给 GPU patch renderer。
+当前 shader 能力：
 
-## Authoring Contract
+- vertex 阶段根据 patch rect 和 mesh 顶点生成 world xz。
+- 从 `_TerrainHeightmapTextureArray` 采样高度并位移 y。
+- 从 `_TerrainNormalmapTextureArray` 采样法线。
+- 使用 neighbor mask 做 LOD seam snapping。
+- 支持 C# 传入的 LOD debug color array。
+- ForwardLit 目前仍是 `_BaseColor * main light/shadow` 的简化着色。
+- ShadowCaster pass 已存在。
+- `GPUTerrainHiZDepth.shader` 存在，`GPUTerrain.DrawHiZDepth` 也存在，但当前 `GpuDrivenHizFeature` 主要从 URP camera depth target 构建 Hi-Z Pyramid。除非有 RenderPass 显式调用 `DrawHiZDepth`，否则不能认为 terrain depth injection 已完整接入。
 
-Unity Terrain 继续负责：
+当前 Debug 策略：
 
-- 高度编辑。
-- 纹理层绘制。
-- holes 编辑。
-- TerrainLayer 管理。
-- TerrainCollider。
-- NavMesh / 烘焙依赖。
-- 美术 Terrain Tools 工作流。
+- Showcase `DebugView` 只保留 `Off` / `Scene Wire`。
+- `Scene Wire` 用于 SceneView patch 线框和必要的 GPU readback stats。
+- Off 状态不读回 visible/frustum/Hi-Z 统计。
+- 旧的 Hi-Z 贴图预览 overlay 和 shader 已清理。
 
-GPU renderer 不负责：
+## 对旧方案的调整评估
 
-- 自定义 sculpt/paint 工具。
-- 替代 TerrainData 序列化。
-- 替代 TerrainCollider。
-- 替代美术地编界面。
+### 1. Culling Bounds 已不再是主要缺口
 
-GPU renderer 负责：
+旧方案里强调“每个 patch 用 9 个 height sample 估 min/max 不准确，需要补 min/max”。这部分已经完成：
 
-- 读取 TerrainData 并生成渲染资源。
-- 在 TerrainData 变化时增量同步 dirty region。
-- 渲染 patch terrain。
-- 输出 depth/shadow/Hi-Z occluder。
-- 和 foliage / object GPU culling 共用 terrain 高度、法线、可见性数据。
+- `GpuTerrainBakedData.BakedNode.heightMinMax` 已存在。
+- `GpuTerrainNodeInfo.heightMinMax` 已上传到 GPU。
+- `TerrainCulling.compute` 已直接读取 `heightMinMax`。
 
-## Data Modules
+因此当前文档不应继续把“补 patch min/max”作为主要里程碑。
 
-建议将当前 `GPUTerrain` 拆成以下逻辑模块。早期可以仍在一个 MonoBehaviour 中实现，但数据职责应按此拆分。
+后续仍可考虑 GPU min/max pyramid，但它的主要价值已经变成：
 
-### GpuTerrainWorld
+- 支持运行时 dirty region 增量更新。
+- 支持 runtime editing。
+- 支持更复杂的 screen-error LOD。
 
-全局 terrain renderer 入口。
+对于当前离线 Bake 数据路径，它不是白模渲染的前置条件。
 
-职责：
+### 2. Runtime Dirty Sync 优先级应下调
 
-- 管理多个 `Terrain` tile。
-- 维护全局 `TerrainLayerPalette`。
-- 管理全局 buffers 和 texture arrays。
-- 提供 debug stats。
-- 驱动 LOD rebuild、culling dispatch、draw。
+当前项目已经明确运行时只需要数据，不需要传入地形重建 Node。也就是说近期方向应是：
 
-### GpuTerrainTile
+```text
+Unity Terrain authoring
+  -> Editor Bake
+  -> GpuTerrainBakedData
+  -> Runtime renderer consume baked data
+```
 
-每个 Unity Terrain 对应一个 tile。
+因此：
 
-建议字段：
+- 不建议当前阶段做运行时 TerrainData dirty callback。
+- 不建议在运行时重建 quadtree。
+- 不建议为了地编同步把 `GPUTerrain` 重新变回 TerrainData mirror builder。
+
+如果后续确实需要运行时地形编辑，再单独做 dirty sync。
+
+### 3. 当前最大缺口是材质数据和着色
+
+目前 terrain 仍接近白模，根因不是 culling/LOD，而是缺少：
+
+- TerrainLayer palette。
+- alphamap/control/splat texture。
+- holes texture。
+- TerrainLayer diffuse/normal/mask map。
+- TerrainLayer tiling/offset。
+- metallic/smoothness/occlusion 等 PBR 参数。
+- 与 URP Lit 更接近的 SurfaceData/InputData 流程。
+
+所以后续实现重点应调整为：
+
+```text
+补齐 baked material data
+  -> shader 支持 control blend
+  -> shader 支持 TerrainLayer PBR
+  -> Forward/Shadow/Depth/Hi-Z pass 一致处理 holes
+```
+
+### 4. Hi-Z Terrain Depth 需要明确接入方式
+
+当前 Hi-Z Pyramid 输入来自 URP camera depth target。这个方案可以继续保留，但要明确两个模式：
+
+1. Camera Depth 模式
+   - Terrain 正常写入 camera depth。
+   - Hi-Z pass 在合适的 RenderPassEvent 之后读取 camera depth。
+   - 简单，和 URP pipeline 兼容性较好。
+
+2. Terrain Depth Injection 模式
+   - 在 Hi-Z pass 内显式调用 `GPUTerrain.DrawHiZDepth`。
+   - terrain 可以作为 foliage/object 的提前 occluder。
+   - 必须保证 holes、depth compare、reversed-Z 逻辑完全一致。
+
+当前实现更接近第 1 种。`GPUTerrainHiZDepth.shader` 可以保留，但文档不能假设它已经完整参与当前 Hi-Z 输入。
+
+## 推荐总体方案
+
+推荐继续采用：
+
+```text
+Unity Terrain 编辑
+        |
+        v
+Editor Bake
+  - tile metadata
+  - quadtree nodes
+  - patch heightMinMax
+  - height/normal arrays
+  - control/holes arrays
+  - TerrainLayer palette
+        |
+        v
+GpuTerrainBakedData
+        |
+        v
+Runtime GPUTerrain
+  - CPU LOD node selection
+  - neighbor seam mask
+  - GPU frustum + Hi-Z culling
+  - indirect draw
+        |
+        v
+GPUTerrain shader
+  - height displacement
+  - control/splat blend
+  - layer albedo/normal/mask
+  - URP lighting/shadow/depth consistency
+```
+
+当前不建议切到：
+
+- 纯 geometry clipmap。
+- 完全 GPU quadtree traversal。
+- BatchRendererGroup。
+- 大规模 Draw API 迁移。
+
+原因是这些方向不能直接解决当前白模问题，且会打断已经稳定下来的 Bake-only runtime 架构。
+
+## 渲染数据设计
+
+### 保留现有 Patch 数据
+
+当前 GPU patch 数据结构已经够用：
+
+```hlsl
+struct NodeInfoData
+{
+    float4 rect;          // world x, world z, width, depth
+    float2 heightMinMax;  // world-space min/max y
+    int mipmap;
+    int neighbor;
+    int terrainIndex;
+    int padding;
+};
+```
+
+它负责：
+
+- vertex displacement 的空间定位。
+- frustum bounds。
+- Hi-Z bounds。
+- SceneView wireframe bounds。
+- LOD debug color。
+
+不建议把材质层信息塞进每个 patch。Terrain 材质是 tile/layer 维度的数据，应单独绑定。
+
+### 扩展 Terrain Tile Render Info
+
+当前 `TerrainTileInfo` 只有 origin 和 size。后续需要为材质绑定补充 tile 渲染信息：
 
 ```csharp
-struct GpuTerrainTile
+struct GpuTerrainTileRenderInfo
 {
     public int terrainIndex;
-    public Terrain terrain;
-    public TerrainData terrainData;
     public Vector3 worldOrigin;
     public Vector3 worldSize;
     public int heightmapResolution;
-    public int alphamapResolution;
-    public int holesResolution;
-    public int layerOffset;
+    public int controlResolution;
+    public int controlTextureOffset;
+    public int controlTextureCount;
+    public int layerRemapOffset;
     public int layerCount;
+    public int holesSlice;
 }
 ```
 
-### TerrainLayerPalette
+用途：
 
-全局材质层表。多个 Terrain 可能引用相同 TerrainLayer，应去重。
+- 从 terrain index 找到 control texture slice。
+- 从 control RGBA 通道找到全局 TerrainLayer index。
+- 从 terrain index 找到 holes slice。
+- 处理不同 Terrain tile 的 layer 数量和 control texture 数量。
 
-建议字段：
+### 新增 TerrainLayer Palette
+
+从所有 `TerrainData.terrainLayers` 构建全局去重表：
 
 ```csharp
-struct GpuTerrainLayer
+struct GpuTerrainLayerInfo
 {
-    public int albedoSlice;
+    public int diffuseSlice;
     public int normalSlice;
     public int maskSlice;
-    public Vector4 tileSizeOffset;      // x,y = tileSize, z,w = tileOffset
+    public Vector4 tileSizeOffset;      // xy = tileSize, zw = tileOffset
     public Vector4 diffuseRemapMin;
     public Vector4 diffuseRemapMax;
-    public Vector4 maskRemapMin;
-    public Vector4 maskRemapMax;
+    public Vector4 maskMapRemapMin;
+    public Vector4 maskMapRemapMax;
     public float normalScale;
     public float metallic;
     public float smoothness;
@@ -169,531 +268,469 @@ struct GpuTerrainLayer
 
 GPU 资源：
 
-- `_TerrainLayerAlbedoArray`
+- `_TerrainLayerDiffuseArray`
 - `_TerrainLayerNormalArray`
 - `_TerrainLayerMaskArray`
-- `_TerrainLayerParamsBuffer`
+- `_TerrainLayerInfoBuffer`
 
-### GpuTerrainPatch
+注意：
 
-patch 是渲染和剔除的基本单位。当前 `NodeInfo` 可以扩展为：
+- `Texture2DArray` 每个 slice 必须同尺寸同格式。
+- 第一阶段建议统一项目层贴图尺寸，例如 1024 或 2048。
+- 如果 TerrainLayer 源贴图尺寸不一致，Bake 阶段重采样。
+- diffuse 使用 sRGB。
+- normal/mask 使用 linear。
 
-```hlsl
-struct GpuTerrainPatch
-{
-    float4 rect;              // world x, world z, width, depth
-    float2 heightMinMax;      // world-space min/max y for this patch
-    uint terrainIndex;
-    uint lod;
-    uint neighborMask;
-    uint materialPageMask;    // optional, for future streaming/debug
-    float geomError;          // optional, screen-error LOD
-    uint flags;               // holes/all-empty/debug flags
-};
-```
+### 新增 Control / Alphamap 数据
 
-第一阶段可以保持 C# struct 与当前 `NodeInfo` 兼容，只新增 `heightMinMax`。
+Unity Terrain alphamap 每张 RGBA 控制 4 个 layer。
 
-## GPU Resources
-
-### Height
-
-目标：shader 和 compute 都直接读取 GPU height resource。
-
-建议保留 texture array 方案：
-
-- `_TerrainHeightmapTextureArray`
-- format: `R16` 或 `RFloat`，当前 `RGBAHalf` 可先保留但浪费带宽。
-- slice = terrain index。
-- value = normalized height01。
-
-同步策略：
-
-- 初始化时从 `TerrainData.heightmapTexture` copy 到 array/RT。
-- Terrain 编辑后，仅更新 dirty rect 对应区域。
-- 如果 Unity Terrain 的 heightmap resolution 不一致，按 resolution 分组维护多个 renderer batch，或强制项目规范统一分辨率。
-
-### Normal
-
-当前 CPU 生成 normal texture 可作为 fallback。推荐升级为 compute 从 height 生成：
-
-- `_TerrainNormalmapTextureArray`
-- format: `ARGB32` 或 `RG16_SNORM`。
-- dirty rect 更新时外扩 1-2 texel 重新生成。
-
-优势：
-
-- Terrain 编辑后不用 CPU 遍历整张 heightmap。
-- 法线与 GPU height 保持一致。
-- 可以同时输出 slope/curvature，供材质自动混合使用。
-
-### Control / Splat
-
-Unity Terrain 的 alphamap 每 4 层一张 RGBA control texture。
-
-GPU 侧建议：
+建议 Bake 为：
 
 - `_TerrainControlTextureArray`
-- slice = terrainIndex * controlTextureCountPerTerrain + controlIndex
-- RGBA = 4 个 layer 权重。
-
-每个 tile 还需要 layer remap：
+- `_TerrainControlLayerIndices`
 
 ```hlsl
+TEXTURE2D_ARRAY(_TerrainControlTextureArray);
 StructuredBuffer<uint4> _TerrainControlLayerIndices;
-// index = terrainIndex * maxControlTextures + controlIndex
-// value = global layer indices for rgba
 ```
 
-渲染时流程：
+索引关系：
 
 ```text
-terrainUV -> sample control0/control1/... -> gather non-zero weights
-globalLayerIndex -> sample albedo/normal/mask texture arrays
-blend material response
+controlSlice = tile.controlTextureOffset + controlIndex
+layerIndices = _TerrainControlLayerIndices[tile.layerRemapOffset + controlIndex]
+RGBA weights -> 4 个全局 TerrainLayer palette index
 ```
 
-第一阶段建议支持最多 4 层，跑通后扩展到 8/12/16 层。
+第一阶段先支持每个 terrain tile 最多 4 层。跑通后再扩展到 8/12/16 层。
 
-### Holes
+### 新增 Holes 数据
 
-Unity Terrain holes 应同步到：
+Unity Terrain holes 建议 Bake 到：
 
 - `_TerrainHolesTextureArray`
-- format: `R8`。
-- 0 = hole, 1 = solid。
+- 格式：`R8`
+- 约定：`1 = solid`，`0 = hole`
 
-shader 中：
-
-- vertex 阶段不裁剪。
-- fragment 阶段采样 holes，低于阈值 alpha clip。
-- depth/shadow/Hi-Z depth pass 必须使用同样 holes clip，否则可见性和阴影会错。
-
-### MinMax Height Pyramid
-
-当前 culling compute 采样 9 个高度点估算 bounds。建议补充 min/max pyramid：
-
-- `_TerrainMinMaxHeightTextureArray`
-- 每个 mip texel 存该区域 min/max height01。
-- format: `RGHalf` 或 `RGFloat`。
-
-用途：
-
-- patch culling 的 heightMinMax。
-- patch bounds debug。
-- foliage placement/culling。
-- screen-error LOD。
-- terrain depth occluder conservative bounds。
-
-生成策略：
-
-- 初始化全量生成。
-- Terrain height dirty rect 后，从 dirty rect 对应 mip0 区域开始逐级更新。
-
-### Optional Macro/Base Maps
-
-中远景材质可以增加：
-
-- `_TerrainMacroColorArray`
-- `_TerrainMacroNormalArray`
-- `_TerrainAOArray`
-
-这些不是第一阶段必需，但能明显改善 tiled texture 重复感。
-
-## Shader Upgrade
-
-新增或重构为 `GPUTerrainLit.shader`。
-
-### Vertex Stage
-
-输入：
-
-- patch rect。
-- visible patch id。
-- terrain index。
-- height texture。
-- normal texture。
-- neighbor mask。
-
-输出：
-
-- world position。
-- terrain UV。
-- material UV。
-- normalWS。
-- tangent basis 或 derivative 信息。
-- lod/debug color。
-
-保留当前 edge snapping，后续增加 geomorph：
-
-```text
-fine edge vertex -> align to coarser neighbor edge
-optional morph factor -> reduce LOD popping
-```
-
-### Fragment Stage
-
-最小目标：
-
-- sample control map。
-- sample 4 terrain layers。
-- blend albedo。
-- blend normal。
-- blend mask map。
-- feed URP lighting。
-- receive main light shadow。
-- holes alpha clip。
-
-材质混合优先级：
-
-1. Weight blend: 最容易和 Unity Terrain 结果对齐。
-2. Height blend: 第二阶段引入，用 TerrainLayer mask/height 改善层间过渡。
-3. Triplanar cliff: 第三阶段针对陡坡补强。
-
-Debug modes：
-
-- LOD color。
-- terrain index。
-- control weights。
-- layer index。
-- height。
-- normal。
-- min/max bounds。
-- holes。
-
-## Terrain Editing Sync
-
-因为地编仍由 Unity Terrain 负责，GPU renderer 应监听或检测 TerrainData 变化，然后同步镜像资源。
-
-建议分两档实现。
-
-### Phase 1: Explicit Rebuild
-
-先提供 Inspector 按钮或运行时快捷键：
-
-```text
-Rebuild GPU Terrain Resources
-```
-
-行为：
-
-- 重新扫描 Terrain list。
-- 重新构建 height/normal/control/holes/layer arrays。
-- 重新构建 patch buffers。
-
-适合先跑通渲染材质。
-
-### Phase 2: Dirty Sync
-
-引入 dirty tracking：
-
-```csharp
-struct TerrainDirtyRegion
-{
-    public int terrainIndex;
-    public RectInt heightRect;
-    public RectInt controlRect;
-    public RectInt holesRect;
-    public bool heightDirty;
-    public bool controlDirty;
-    public bool holesDirty;
-    public bool layersDirty;
-}
-```
-
-同步策略：
-
-- height dirty：copy height region，regenerate normal region，update min/max pyramid，update affected patch bounds。
-- control dirty：copy alphamap region，update control texture array。
-- holes dirty：copy holes region，update holes texture array，mark affected patches。
-- layers dirty：rebuild layer palette and remap buffers。
-
-Unity `TerrainData` 提供 heightmap、alphamap、holes、terrainLayers、dirty/sync 等 API，可作为同步依据。
-
-## LOD Strategy
-
-当前 LOD 由 CPU quadtree 距离阈值控制，可继续使用。
-
-优化顺序：
-
-### 1. Patch Height Bounds
-
-在 `GpuTerrainPatch` 中存 `heightMinMax`，compute culling 直接读，不再每帧采 9 点高度。
-
-好处：
-
-- 减少 compute texture fetch。
-- bounds 更保守稳定。
-- debug 可视化清晰。
-
-### 2. Screen Error LOD
-
-从距离阈值升级为 screen error：
-
-```text
-screenError = geomError / distance * projectionScale
-if screenError < threshold -> use coarser LOD
-```
-
-其中 `geomError` 可来自：
-
-- Unity `TerrainData.GetMaximumHeightError()`。
-- 自己从 height mip/minmax 计算。
-- 每 LOD 固定误差估算。
-
-### 3. Geomorph
-
-当前 snapping 能解决裂缝，但 LOD 切换会 pop。
-
-后续增加：
-
-- per patch morph factor。
-- vertex shader 根据距离将高频顶点逐步贴近低 LOD 采样点。
-
-### 4. GPU LOD Selection
-
-不建议第一阶段做 GPU QuadTree。
-
-当 CPU LOD rebuild 成为瓶颈后，再改为：
-
-- CPU 上传 root patch buffer。
-- compute 选择 LOD。
-- append active patch。
-- compute culling active patch。
-- output visible patch id and indirect args。
-
-## Culling Strategy
-
-保留当前 frustum + Hi-Z culling。
-
-优化点：
-
-- `heightMinMax` 从 patch buffer 读取。
-- projected rect 计算使用 conservative bounds。
-- Hi-Z compare 保持 reversed-Z / normal-Z 双路径。
-- terrain depth pass 必须写 holes clip 后的 terrain。
-- debug stats 按 terrain/frustum/Hi-Z 分类保留。
-
-建议 culling data flow：
-
-```text
-allActivePatchBuffer
-  -> TerrainCulling.compute
-       frustum test
-       Hi-Z test
-       optional holes/all-empty skip
-  -> visiblePatchIdBuffer
-  -> indirect args
-  -> render
-```
-
-## Draw API Roadmap
-
-短期：
-
-- 保留 `Graphics.DrawMeshInstancedIndirect`，降低改动风险。
-
-中期：
-
-- 迁移到 `Graphics.RenderMeshIndirect`。
-- 使用 `GraphicsBuffer.IndirectDrawIndexedArgs`。
-- 支持每 LOD mesh 或多个 draw command。
-
-长期：
-
-- 如果需要和 Unity SRP batch / culling 更深整合，评估 BatchRendererGroup。
-- BatchRendererGroup 适合自定义大量实例和 custom terrain patch，但接入复杂度明显高于当前 indirect draw。
-
-## Render Passes
-
-GPU terrain 至少需要以下 pass：
-
-- ForwardLit / DeferredLit。
-- ShadowCaster。
-- DepthOnly。
-- DepthNormals。
-- HiZDepth。
-- Debug。
-
-当前已有：
+必须在以下 pass 中一致处理：
 
 - ForwardLit。
 - ShadowCaster。
-- HiZDepth。
+- DepthOnly。
+- DepthNormals。
+- HiZDepth，如果启用 terrain depth injection。
 
-待补：
+如果 holes 只在 Forward clip，而 depth/shadow/Hi-Z 不 clip，会导致洞口阴影、深度和遮挡错误。
 
-- DepthOnly：给 URP depth prepass / effects 使用。
-- DepthNormals：给 SSAO、decal、后处理使用。
-- Debug pass 或 shader keyword。
+## Shader 改造方案
 
-## Recommended Implementation Milestones
+### 保留当前 Vertex Path
 
-### Milestone 1: TerrainLayer Rendering
+当前 vertex path 是合理的：
 
-目标：从白模变为可用地表材质。
+```text
+instance id
+ -> visible patch id
+ -> NodeInfoData
+ -> patch rect + mesh vertex
+ -> world xz
+ -> terrain uv
+ -> height array sample
+ -> world y
+ -> normal array sample
+ -> clip position
+```
+
+继续保留：
+
+- `_TerrainHeightmapTextureArray` 高度位移。
+- `_TerrainNormalmapTextureArray` 法线采样。
+- neighbor seam snapping。
+- `_TerrainLodDebugColors`。
+
+后续可优化：
+
+- 增加 geomorph，减少 LOD popping。
+- 明确 normal bake/encode/decode 规范。当前 normal bake 的通道写入顺序为 `z, y, x`，shader 端需要持续保持一致。
+
+### 替换 Fragment 白模着色
+
+当前 fragment 约等于：
+
+```text
+_BaseColor * simple main light/shadow
+```
+
+目标流程：
+
+```text
+terrainUV
+ -> sample control texture(s)
+ -> RGBA 通道 remap 到全局 TerrainLayer index
+ -> sample layer diffuse/normal/mask
+ -> weight blend
+ -> 构建 URP SurfaceData/InputData
+ -> UniversalFragmentPBR
+```
+
+第一阶段最小目标：
+
+- 4-layer weight blend。
+- diffuse/albedo 贴图。
+- normal map + TerrainLayer normalScale。
+- metallic/smoothness 从 mask map 或 TerrainLayer 默认值读取。
+- main light shadow receive。
+
+第二阶段再增加：
+
+- 8 层以上混合。
+- 基于 mask height 的 height blend。
+- macro tint/detail。
+- slope/cliff triplanar 强化。
+
+### HLSL 文件拆分建议
+
+`GPUTerrainForwardBase.hlsl` 如果继续塞 layer blend 会很快变大，建议在接入 TerrainLayer 时拆分：
+
+```text
+Assets/5_Terrain/
+  GPUTerrain.shader
+  GPUTerrainInput.hlsl          // buffers, texture arrays, tile/layer structs
+  GPUTerrainPatchVertex.hlsl    // patch vertex, height displacement, seam snapping
+  GPUTerrainLayerBlend.hlsl     // control sampling and layer blending
+  GPUTerrainLighting.hlsl       // URP SurfaceData/InputData helpers
+```
+
+短期也可以先在现有文件里实现，跑通后再拆。
+
+## Render Pass 要求
+
+当前已有：
+
+- `ForwardLit`
+- `ShadowCaster`
+- 独立 `GPUTerrainHiZDepth.shader`
+
+推荐目标 pass：
+
+1. `ForwardLit`
+   - 完整 TerrainLayer 着色。
+   - 接收阴影。
+   - holes clip。
+
+2. `ShadowCaster`
+   - 同样高度位移。
+   - 同样 holes clip。
+   - 不启用 debug color。
+
+3. `DepthOnly`
+   - 如果 URP depth prepass 或后续效果需要 terrain depth，必须补。
+   - 同样高度位移和 holes clip。
+
+4. `DepthNormals`
+   - 如果需要 SSAO、decal 或依赖 normal texture 的后处理，必须补。
+   - 同样高度位移和 holes clip。
+
+5. `HiZDepth`
+   - 仅在 terrain depth injection 模式需要。
+   - 同样高度位移和 holes clip。
+   - reversed-Z / normal-Z 逻辑必须和 Hi-Z compare 一致。
+
+## Hi-Z 接入决策
+
+当前状态：
+
+- `GpuDrivenHizFeature` 从 URP camera depth target 生成 Hi-Z Pyramid。
+- Terrain culling 绑定 `_HizMap`、`_HizMapSize`、`_HizCameraMatrixVP`、`_HizCameraPositionWS`、`_HizDepthBias`。
+- Terrain culling 使用 baked `heightMinMax` 做 conservative bounds。
+
+建议：
+
+- 短期继续使用 camera depth 模式。
+- 检查 RenderPassEvent，确认生成 Hi-Z 时 terrain 是否已经写入 camera depth。
+- 如果 terrain 必须提前作为 foliage/object occluder，再补一个明确的 terrain depth injection pass，调用 `GPUTerrain.DrawHiZDepth`。
+- 不要恢复旧的 Hi-Z preview GUI 和无用 debug counters。
+
+## LOD 与 Culling
+
+当前 LOD：
+
+- CPU quadtree selection。
+- 距离阈值来自 `TerrainLodConfig.distance`。
+- LOD debug color 来自 `TerrainLodConfig.debugColor`。
+- neighbor mask 用于 seam snapping。
+- active node 变化时才上传数据。
+
+建议保留当前方案。当前更高价值的工作是材质数据和 pass 完整性。
+
+后续优化顺序：
+
+1. Geomorph
+   - 解决 LOD popping。
+   - 保留 neighbor snapping 防裂缝。
+
+2. Screen-error LOD
+   - 材质路径稳定后再从距离阈值升级。
+   - 如有需要，为 node 存储 geometric error。
+
+3. GPU LOD Selection
+   - 仅当 CPU LOD 再次成为瓶颈时考虑。
+   - 当前 baked quadtree 数据可以支撑后续 compute traversal。
+
+当前 culling：
+
+- Frustum 使用 `rect + heightMinMax` AABB。
+- Hi-Z 使用投影 bounds 和四角采样。
+- Stats/readback 只在 Scene Wire DebugView 开启时执行。
+
+建议继续保留，不要回退到每帧 height texture 采样估 bounds。
+
+## Editor Bake 扩展方案
+
+继续扩展 `GpuTerrainBakedDataEditor`，不要把运行时变回数据构建器。
+
+当前 Bake 已生成：
+
+- nodes。
+- height min/max。
+- height array。
+- normal array。
+
+后续增加：
+
+1. Terrain 组合法性校验
+   - 当前 `BuildHeightMapArray` 默认所有 Terrain heightmap resolution 一致。
+   - 应增加显式校验和错误提示。
+   - 混合分辨率要么不支持，要么分组生成多个 baked asset。
+
+2. TerrainLayer palette
+   - 去重 TerrainLayer 引用。
+   - Bake/resample diffuse、normal、mask。
+   - 序列化 layer info。
+
+3. Control texture array
+   - 读取 `TerrainData.alphamapTextures` 或 alphamap data。
+   - Bake RGBA control slices。
+   - 构建 tile -> global layer remap。
+
+4. Holes texture array
+   - 读取 Terrain holes。
+   - Bake R8 solid/hole mask。
+
+5. 作为 sub-asset 保存
+   - Height array。
+   - Normal array。
+   - Control array。
+   - Holes array。
+   - Layer diffuse/normal/mask arrays。
+
+6. 自动赋值给场景中的 `GPUTerrain`
+
+## Runtime 绑定方案
+
+扩展 `GPUTerrain` 的资源绑定：
+
+```csharp
+private static readonly int TerrainControlTextureArrayId = Shader.PropertyToID("_TerrainControlTextureArray");
+private static readonly int TerrainHolesTextureArrayId = Shader.PropertyToID("_TerrainHolesTextureArray");
+private static readonly int TerrainLayerDiffuseArrayId = Shader.PropertyToID("_TerrainLayerDiffuseArray");
+private static readonly int TerrainLayerNormalArrayId = Shader.PropertyToID("_TerrainLayerNormalArray");
+private static readonly int TerrainLayerMaskArrayId = Shader.PropertyToID("_TerrainLayerMaskArray");
+private static readonly int TerrainTileRenderInfoBufferId = Shader.PropertyToID("_TerrainTileRenderInfoBuffer");
+private static readonly int TerrainLayerInfoBufferId = Shader.PropertyToID("_TerrainLayerInfoBuffer");
+private static readonly int TerrainControlLayerIndicesId = Shader.PropertyToID("_TerrainControlLayerIndices");
+```
+
+和现有资源一起绑定：
+
+- `_TerrainHeightmapTextureArray`
+- `_TerrainNormalmapTextureArray`
+- `_TerrainParams`
+- `_TerrainOriginSizes`
+- `_TerrainCount`
+- `_TerrainLodDebugColors`
+- `_TerrainLodDebugColorCount`
+
+短期资源 owner 仍放在 `GPUTerrain`，当类继续膨胀后再拆 `GpuTerrainRuntimeResources` 或类似 helper。
+
+## Debug 策略
+
+Showcase DebugView：
+
+- `Off`：不做 GPU readback stats，GUI 保持精简。
+- `Scene Wire`：SceneView patch 线框和必要统计。
+
+Shader/material debug：
+
+- `_TerrainDebugColorMode` 可以保留为材质/Inspector 级 debug。
+- 后续 control weight、layer index、normal、holes 等 debug 可以做成临时 shader keyword 或材质属性。
+- 不要重新把这些都塞回 Showcase Runtime GUI。
+
+## 实施里程碑
+
+### Milestone 1：4-Layer TerrainLayer 渲染
+
+目标：从白模/单色变成可用地表材质。
 
 任务：
 
-- 建 `TerrainLayerPalette`。
-- 构建 albedo/normal/mask texture arrays。
-- 构建 control texture array。
-- shader 支持 4 layer splat blend。
-- holes alpha clip。
-- debug control/layer。
+- 在 baked asset 中增加 TerrainLayer palette。
+- 增加 layer diffuse/normal/mask texture arrays。
+- 每个 terrain tile 先支持 1 张 control texture，也就是最多 4 层。
+- 增加 tile layer remap。
+- shader 支持 4-layer weight blend。
+- 保留当前 height/normal displacement。
 
 验收：
 
-- GPU terrain 与 Unity Terrain 默认材质的大色块分布一致。
+- GPU terrain 的大色块分布与 Unity Terrain 一致。
 - TerrainLayer tile size/offset 生效。
-- 主光、阴影、法线方向正确。
+- 主光和阴影仍正常。
+- 手动打开 LOD debug color 时仍可显示。
 
-### Milestone 2: Data Sync And Dirty Regions
+### Milestone 2：Holes 与 Pass 一致性
 
-目标：Unity Terrain 编辑后 GPU renderer 可更新。
-
-任务：
-
-- 显式 rebuild 按钮。
-- editor/runtime dirty 标记。
-- height/control/holes partial copy。
-- normal compute update。
-- min/max pyramid update。
-
-验收：
-
-- Unity Terrain Tools 修改高度后，GPU terrain 可刷新。
-- 纹理刷层后，GPU terrain control blend 更新。
-- holes 更新后，forward/depth/shadow/Hi-Z 一致。
-
-### Milestone 3: Culling Bounds
-
-目标：提升剔除稳定性和性能。
+目标：可见、阴影、深度、Hi-Z 行为一致。
 
 任务：
 
-- 生成 per patch `heightMinMax`。
-- culling compute 改为读取 patch min/max。
-- debug bounds 显示 min/max。
-- 统计 9 点采样版本和 min/max 版本差异。
+- Bake holes texture array。
+- shader 增加 holes sample 和 clip。
+- ForwardLit、ShadowCaster、DepthOnly、DepthNormals、HiZDepth 共用 holes clip。
+- 根据 URP depth 需求补 DepthOnly pass。
+- 如需要 SSAO/decal，补 DepthNormals pass。
 
 验收：
 
-- 山峰/峡谷不会被错误 Hi-Z/frustum 剔除。
-- culling compute texture fetch 减少。
+- holes 视觉上打开。
+- holes 不投影。
+- holes 不写 depth。
+- Hi-Z 不通过 holes 错误遮挡后方物体。
 
-### Milestone 4: LOD Quality
+### Milestone 3：PBR Layer 质量
 
-目标：减少 popping，提升 patch 数稳定性。
+目标：接近 Unity TerrainLayer 的 URP Lit 表现。
 
 任务：
 
-- screen error LOD。
-- geomorph。
-- LOD stats。
-- neighbor debug。
+- normal map + per-layer normalScale。
+- mask map + TerrainLayer 默认 metallic/smoothness。
+- 构建 URP `SurfaceData` / `InputData`。
+- 支持 smoothness、metallic、occlusion。
+- 可选 height blend。
 
 验收：
 
-- 相机移动时 LOD 变化更平滑。
-- seam 无明显裂缝。
+- 地形能正确响应光照。
+- 法线细节清晰且 LOD 切换稳定。
+- 材质层过渡在 gameplay camera 下可接受。
 
-### Milestone 5: Draw API And Scaling
+### Milestone 4：资源规模控制
 
-目标：为更大地形和更多平台做准备。
+目标：控制显存和 shader sample 成本。
 
 任务：
 
-- 评估 `RenderMeshIndirect`。
-- 按 LOD 或材质分组 multi draw。
-- 评估 BatchRendererGroup。
-- 分 resolution / layer count 建 batch。
+- 定义每个 terrain tile 最大 layer 数。
+- 定义 TerrainLayer 贴图 array 分辨率策略。
+- 明确混合 height/control 分辨率如何处理。
+- 对不兼容 Terrain group 生成 bake-time 报告。
+- 考虑按分辨率或 layer 数拆 baked asset / renderer batch。
 
 验收：
 
-- 支持多个 Terrain tile。
-- draw command 和 resource binding 清晰。
+- 大场景在 Bake 阶段给出明确错误，而不是运行时渲染错误。
+- 显存占用可预估。
+- shader sample 数有上限。
 
-## File-Level Changes
+### Milestone 5：可选 Runtime Editing Sync
 
-建议新增：
+目标：如果后续需要运行时地形编辑，再支持增量同步。
+
+任务：
+
+- 追踪 height/control/holes dirty region。
+- 局部更新 texture arrays。
+- 对 dirty height 区域重新生成 normal。
+- 更新受影响 patch 的 `heightMinMax`。
+- 可选增加 GPU min/max pyramid。
+
+验收：
+
+- Unity Terrain 修改可以不全量 rebake 就反映到 GPU terrain。
+- 运行时仍不每帧重建整棵 quadtree。
+
+该里程碑不是当前白模渲染问题的前置项。
+
+## 文件级改动建议
+
+可能需要修改：
 
 ```text
-Assets/5_Terrain/Runtime/
-  GpuTerrainWorld.cs
-  GpuTerrainTile.cs
-  GpuTerrainLayerPalette.cs
-  GpuTerrainResourceBuilder.cs
-  GpuTerrainDirtyTracker.cs
-  GpuTerrainPatchBuilder.cs
+Assets/5_Terrain/GpuTerrainBakedData.cs
+  增加 tile render info。
+  增加 layer palette info。
+  增加 control/holes/layer texture array 引用。
 
-Assets/5_Terrain/Shaders/
-  GPUTerrainLit.shader
-  GPUTerrainLitInput.hlsl
-  GPUTerrainLayerBlend.hlsl
-  TerrainNormalFromHeight.compute
-  TerrainMinMaxPyramid.compute
+Assets/GPUDrivenShowcase/Editor/GpuTerrainBakedDataEditor.cs
+  Bake TerrainLayer palette。
+  Bake control textures。
+  Bake holes textures。
+  增加分辨率和 layer 校验。
+
+Assets/5_Terrain/GPUTerrain.cs
+  绑定新增 textures 和 buffers。
+  保持 runtime baked-data-only。
+
+Assets/5_Terrain/GPUTerrain.shader
+  扩展 ForwardLit。
+  根据需求补 DepthOnly / DepthNormals。
+  保持 ShadowCaster。
+
+Assets/5_Terrain/GPUTerrainForwardBase.hlsl
+  先扩展，后续拆成 input/vertex/layer/lighting helpers。
 ```
 
-为了避免 Unity meta 引用破坏，短期也可以先在现有 `Assets/5_Terrain` 目录下新增文件，不移动旧文件。
-
-现有文件演进：
-
-- `GPUTerrain.cs`
-  - 增加 TerrainLayer/control/holes 资源构建。
-  - 增加 dirty rebuild 入口。
-  - 增加 patch `heightMinMax`。
-- `TerrainCulling.compute`
-  - 使用 patch `heightMinMax`。
-  - 保留 Hi-Z compare。
-- `GPUTerrainForwardBase.hlsl`
-  - 拆分 vertex displacement 和 material layer blend。
-  - 增加 holes clip。
-- `GPUTerrain.shader`
-  - 升级为 lit terrain shader 或保留为 debug shader。
-
-## Risks
-
-- Texture2DArray 要求 slice 尺寸和格式一致；Terrain tile 分辨率不一致时必须分组或做规范限制。
-- TerrainLayer 数量过多会增加 fragment texture sample，需要限制每像素最多混合层数。
-- Unity Terrain 默认 shader 的细节很多，第一阶段只追求视觉一致的大方向，不追求逐像素完全一致。
-- Terrain 编辑后的 dirty callback 不一定覆盖所有导入/脚本修改路径，因此需要提供强制 rebuild。
-- Hi-Z depth 中如果不处理 holes，会导致洞口后方物体被错误遮挡。
-- CPU quadtree 在 tile 数很多时会成为瓶颈，但当前阶段先用它换稳定性。
-
-## Mainstream References
-
-### Unity APIs
-
-- Unity TerrainData: https://docs.unity3d.com/2022.3/Documentation/ScriptReference/TerrainData.html
-- Unity TerrainLayer: https://docs.unity3d.com/2022.3/Documentation/ScriptReference/TerrainLayer.html
-- TerrainData dirty texture sync: https://docs.unity3d.com/2022.3/Documentation/ScriptReference/TerrainData.DirtyTextureRegion.html
-- TerrainData sync texture: https://docs.unity3d.com/2022.3/Documentation/ScriptReference/TerrainData.SyncTexture.html
-- TerrainData patch min/max heights: https://docs.unity3d.com/2022.3/Documentation/ScriptReference/TerrainData.GetPatchMinMaxHeights.html
-- DrawMeshInstancedIndirect: https://docs.unity3d.com/2022.3/Documentation/ScriptReference/Graphics.DrawMeshInstancedIndirect.html
-- RenderMeshIndirect: https://docs.unity3d.com/2022.3/Documentation/ScriptReference/Graphics.RenderMeshIndirect.html
-- BatchRendererGroup: https://docs.unity3d.com/2022.3/Documentation/Manual/batch-renderer-group.html
-
-### Terrain LOD / GPU Terrain Techniques
-
-- GPU Gems 2, Chapter 2, Terrain Rendering Using GPU-Based Geometry Clipmaps: https://developer.nvidia.com/gpugems/gpugems2/part-i-geometric-complexity/chapter-2-terrain-rendering-using-gpu-based-geometry
-- CDLOD source and paper links by Filip Strugar: https://github.com/fstrugar/CDLOD
-- Thatcher Ulrich, Chunked LOD: http://tulrich.com/geekstuff/chunklod.html
-- Terrain Rendering in Far Cry 5, Stephen McAuley, Ubisoft: local copy `Doc/TerrainRenderingFarCry5.pdf`
-
-## Recommended Choice For This Project
-
-本项目推荐优先实现：
+可选新增：
 
 ```text
-Unity TerrainData authoring
-  + CPU quadtree / CDLOD-style patch selection
-  + GPU frustum and Hi-Z culling
-  + GPU terrain layer texture arrays
-  + GPU min/max height data
-  + indirect patch draw
+Assets/5_Terrain/GPUTerrainInput.hlsl
+Assets/5_Terrain/GPUTerrainPatchVertex.hlsl
+Assets/5_Terrain/GPUTerrainLayerBlend.hlsl
+Assets/5_Terrain/GPUTerrainLighting.hlsl
 ```
 
-不建议当前阶段切换到纯 geometry clipmap。Geometry clipmap 很适合超大连续高度场，但它和 Unity Terrain tile、TerrainLayer、holes、地编、碰撞工作流的整合成本更高。
+短期不建议移动现有文件目录，避免 Unity meta 和引用变化扩大。
 
-不建议当前阶段做完全 GPU QuadTree。当前 CPU LOD 逻辑已经可用，优先补齐材质数据、dirty sync 和 culling bounds，收益更直接。
+## 风险与注意事项
+
+- `Texture2DArray` slice 必须同尺寸同格式，Bake 阶段必须统一或分组。
+- TerrainLayer 数量过多会显著增加 fragment sample 成本，先从 4 层开始。
+- control resolution 和 heightmap resolution 可能不同，需要独立 UV 采样。
+- normal map import/bake 规范必须固定，否则 shader decode 会错。
+- holes 必须在所有写 color/depth/shadow 的 pass 中一致处理。
+- `Graphics.DrawMeshInstancedIndirect` 当前可以继续使用，`Graphics.RenderMeshIndirect` 后续再评估。
+- BatchRendererGroup 当前不推荐，复杂度高且不能直接解决白模问题。
+
+## 推荐下一步
+
+下一轮优先实现：
+
+```text
+Baked TerrainLayer material data
+  + 4-layer control blend
+  + holes
+  + URP Lit shading
+  + pass consistency
+```
+
+暂时不要优先投入：
+
+- Runtime TerrainData dirty sync。
+- 完全 GPU quadtree traversal。
+- Geometry clipmap。
+- BatchRendererGroup。
+- 重新设计 culling bounds。
+
+当前最有价值的调整，是把 `GpuTerrainBakedData` 从“几何数据资产”扩展成“几何 + 材质数据资产”，同时保持运行时 renderer 简单、稳定、数据驱动。
