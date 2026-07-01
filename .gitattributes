@@ -4,7 +4,6 @@ Assets/TerrainDemoScene_URP/Terrain/Textures/** filter=lfs diff=lfs merge=lfs -t
 Assets/TerrainDemoScene_URP/Terrain/Brushes/** filter=lfs diff=lfs merge=lfs -text
 Assets/TerrainDemoScene_URP/Prefabs/Rocks/** filter=lfs diff=lfs merge=lfs -text
 Assets/TerrainDemoScene_URP/Prefabs/Trees/** filter=lfs diff=lfs merge=lfs -text
-
 *.meta -filter -diff -merge text
 *.prefab -filter -diff -merge text
 *.mat -filter -diff -merge text
@@ -13,3 +12,5 @@ Assets/TerrainDemoScene_URP/Prefabs/Trees/** filter=lfs diff=lfs merge=lfs -text
 *.shader -filter -diff -merge text
 *.shadergraph -filter -diff -merge text
 *.cs -filter -diff -merge text
+
+Assets/5_Terrain/GpuTerrainBakedData.asset filter=lfs diff=lfs merge=lfs -text

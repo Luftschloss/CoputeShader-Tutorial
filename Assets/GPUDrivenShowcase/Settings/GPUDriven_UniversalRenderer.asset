@@ -80,8 +80,5 @@ MonoBehaviour:
   m_Name: GPU Driven Hi-Z
   m_EditorClassIdentifier: 
   m_Active: 1
-  mipmapShader: {fileID: 4800000, guid: f8fcddc59c8584e43b507f8fc5b42991, type: 3}
-  depthCopyShader: {fileID: 4800000, guid: dfb229a5a9cd3934d9513100c4cc8f37, type: 3}
-  terrainDepthShader: {fileID: 4800000, guid: 1b988ee4c64b471d9d1963f4061c2ec5, type: 3}
-  passEvent: 300
-  flipDepthY: 0
+  hizMapCompute: {fileID: 7200000, guid: 2b6d4aa779e04f3d93e80988e6404b42, type: 3}
+  passEvent: 450

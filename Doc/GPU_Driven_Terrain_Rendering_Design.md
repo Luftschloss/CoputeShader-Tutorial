@@ -14,7 +14,8 @@
 当前实现位于：
 
 - `Assets/5_Terrain/GPUTerrain.cs`
-- `Assets/5_Terrain/TerrainNode.cs`
+- `Assets/5_Terrain/GpuTerrainBakedData.cs`
+- `Assets/GPUDrivenShowcase/Editor/GpuTerrainBakedDataEditor.cs`
 - `Assets/5_Terrain/TerrainCulling.compute`
 - `Assets/5_Terrain/GPUTerrain.shader`
 - `Assets/5_Terrain/GPUTerrainForwardBase.hlsl`

@@ -31,6 +31,7 @@ struct Varyings
 struct NodeInfoData
 {
     float4 rect;
+    float2 heightMinMax;
     int mipmap;
     int neighbor;
     int terrainIndex;

@@ -22,125 +22,126 @@ The main scene wiring is in `Assets/5_Terrain/GPUDrivenTerrain.unity`.
 ### Main Files
 
 - `Assets/5_Terrain/GPUTerrain.cs`
-- `Assets/5_Terrain/TerrainNode.cs`
+- `Assets/5_Terrain/GpuTerrainBakedData.cs`
+- `Assets/GPUDrivenShowcase/Editor/GpuTerrainBakedDataEditor.cs`
 - `Assets/5_Terrain/TerrainCulling.compute`
 - `Assets/5_Terrain/GPUTerrain.shader`
 - `Assets/5_Terrain/GPUTerrainForwardBase.hlsl`
 - `Assets/5_Terrain/GPUTerrainHiZDepth.shader`
 - `Assets/5_Terrain/Quad.asset`
 
-### Data Model
+`TerrainNode.cs` has been removed. Runtime terrain rendering no longer receives `Terrain` objects or rebuilds quadtree nodes from `TerrainData`.
 
-`GPUTerrain` supports both the original single `Terrain terrain` field and the newer `List<Terrain> terrainList`.
+### Editor Baking
 
-Runtime terrain data is normalized into:
+Terrain authoring still uses Unity Terrain and Terrain Tools. The GPU terrain renderer consumes baked mirror data generated in the Editor.
 
-- `terrainRuntimeData`: filtered valid Terrain entries.
-- `terrainParams[64]`: per terrain `(size.x, size.y, size.z, terrainWorldY)`.
-- `terrainOriginSizes[64]`: per terrain `(originWorldX, originWorldZ, size.x, size.z)`.
-- `heightMapArray`: `Texture2DArray` storing normalized local height.
-- `normalMapArray`: `Texture2DArray` storing terrain normals.
-- `rootNodes`: one quadtree root per Terrain chunk.
-
-Maximum terrain count is currently `64`.
-
-### Height And Normal Texture Arrays
-
-`BuildTerrainTextureArrays()` builds one height and normal slice per Terrain.
-
-Height data is generated on CPU from Unity Terrain:
-
-```csharp
-height01 = terrainData.GetInterpolatedHeight(u, v) / terrainData.size.y;
-```
-
-Shader decode uses the inverse:
-
-```hlsl
-positionWS.y = terrainDataParam.w + height * terrainDataParam.y;
-```
-
-This keeps GPU terrain height aligned with Unity Terrain local height and world Y offset.
-
-Normals are generated from `TerrainData.GetInterpolatedNormal(u, v)` and stored in a texture array. The shader samples the matching terrain slice by `terrainIndex`.
-
-Current limitation: the texture array uses the first terrain's heightmap width and height for all slices. Terrain chunks are expected to share heightmap resolution.
-
-### Patch Generation
-
-For each Terrain, `GenerateTerrainNode()` creates a root rect in world XZ:
+Use:
 
 ```text
-(terrainPos.x, terrainPos.z, terrainSize.x, terrainSize.z)
+GPU Driven Showcase/Terrain/Bake Terrain Data...
+GPU Driven Showcase/Terrain/Bake Selected Terrains
+GPU Driven Showcase/Terrain/Bake All Scene Terrains
 ```
 
-The root is subdivided into patch nodes by `resolution`. Each patch receives:
+The bake tool creates or updates a `GpuTerrainBakedData` asset. The asset stores:
 
-- world-space rect
-- mip level `LOD - 1`
-- terrain index
+- per terrain world origin and size
+- baked height `Texture2DArray`
+- baked normal `Texture2DArray`
+- flat quadtree node array
+- root node indices
+- per node world-space rect
+- per node world-space `heightMinMax`
+- node mip, terrain index, parent, and explicit child indices
 
-Patch data is stored as `NodeInfo`:
+When `Assign To GPUTerrain` is enabled, the tool assigns the baked asset to every scene `GPUTerrain` and marks the scene dirty.
+
+The current baked node asset version is `2`. Older baked assets are rejected by `GpuTerrainBakedData.IsValid`; rebake terrain data after pulling this version.
+
+### Runtime Data Model
+
+`GPUTerrain` has a single serialized data dependency:
 
 ```csharp
-float4 rect;
-int mip;
-int neighbor;
-int terrainIndex;
-int padding;
+[SerializeField] private GpuTerrainBakedData bakedData;
 ```
 
-This struct is mirrored in HLSL/compute as `NodeInfoData`.
+At runtime it binds:
+
+- `bakedData.HeightMapArray`
+- `bakedData.NormalMapArray`
+- terrain tile params derived from baked origin/size
+- active node buffers built from the baked node array
+
+The runtime still performs camera-dependent LOD selection, neighbor mask generation, GPU frustum culling, Hi-Z culling, indirect drawing, shadow drawing, and showcase stats. It does not sample `TerrainData`, rebuild node trees from `Terrain`, or generate height/normal texture arrays at runtime.
+
+Maximum terrain count is currently `GpuTerrainBakedData.MaxTerrainCount` (`64`).
+
+### Baked Node Layout
+
+Runtime patch data uploaded to GPU is:
+
+```csharp
+struct GpuTerrainNodeInfo
+{
+    Vector4 rect;          // world x, world z, width, depth
+    Vector2 heightMinMax;  // world-space min/max y
+    int mip;
+    int neighbor;
+    int terrainIndex;
+    int padding;
+}
+```
+
+The HLSL/compute `NodeInfoData` layout mirrors this 40-byte struct.
 
 ### CPU LOD Selection
 
-LOD selection is CPU driven.
+LOD selection is still CPU driven, but it traverses the baked flat node array:
 
-`TerrainNode.CollectNodeInfo()` compares horizontal camera distance to `lodDistance[mip]`:
+- root nodes come from `bakedData.RootNodeIndices`
+- children are addressed by explicit `childIndex0..3` values
+- `mip == 0` is always emitted
+- higher mip nodes are emitted when camera XZ distance is greater than `lodDistance[mip]`
+- otherwise the traversal recurses into children
 
-- `mip == 0` is always emitted.
-- Higher mip nodes are emitted when the camera is far enough.
-- Otherwise the node recurses into children.
+`GPUTerrain` rebuilds active terrain nodes when:
 
-`GPUTerrain` rebuilds visible terrain nodes when:
-
-- terrain resources are dirty
+- baked resources are dirty
 - LOD rebuild is forced
-- camera XZ movement exceeds `lodRebuildDistanceThreshold`
+- camera XZ movement exceeds the effective rebuild distance
+
+The effective rebuild distance is:
+
+```text
+max(lodRebuildDistanceThreshold, leafPatchSize * 0.5)
+```
+
+`leafPatchSize` is `bakedData.PatchSize / 2^(bakedData.LodCount - 1)`. With `patchSize = 64` and `lodCount = 4`, the actual finest rendered patch is `8` world units, so the runtime will not rebuild LOD more often than every `4` world units unless LOD is forced.
+
+The moving-camera LOD path avoids per-rebuild managed allocations:
+
+- active patch upload data is kept in a persistent `NativeArray<GpuTerrainNodeInfo>`
+- all-patch ID data is kept in a persistent `NativeArray<uint>` and uploaded only when buffer capacity changes
+- indirect args and Hi-Z stats reset uploads use persistent `NativeArray<uint>` buffers
+- compute buffers are sized to baked node capacity, so ordinary LOD count changes do not recreate buffers
+- compute kernel lookup and static buffer bindings are redone only when buffers/resources change
+- the traversal first records active baked node indices; if the active set did not change, it skips neighbor rebuild and GPU buffer upload
+- neighbor lookup uses a per-terrain leaf-cell lookup table instead of recursively searching every root tree for every edge
 
 ### LOD Crack Handling
 
-LOD seam handling is done by CPU neighbor marking plus vertex shader edge snapping.
+LOD seam handling is still CPU neighbor marking plus vertex shader edge snapping.
 
-After active nodes are collected, `UpdateQuadTreeNode()` looks up top, bottom, left, and right active neighbors. If a neighbor exists and has a coarser mip:
-
-```csharp
-topNode.mip > nodeInfo.mip
-```
-
-the matching bit is written to `nodeInfo.neighbor`:
+After active nodes are collected, `GPUTerrain` looks up top, bottom, left, and right active neighbors. If the neighboring active node is coarser, it writes the matching bit:
 
 - bit `1`: top
 - bit `2`: bottom
 - bit `4`: left
 - bit `8`: right
 
-`Quad.asset` is a 4x4 patch grid with edge vertices marked by vertex colors. The shader uses those vertex colors to offset the fine edge vertices onto the coarse LOD edge:
-
-```hlsl
-if (neighbor & 1) diff.x = -input.color.r;
-if (neighbor & 2) diff.x = -input.color.g;
-if (neighbor & 4) diff.y = -input.color.b;
-if (neighbor & 8) diff.y = -input.color.a;
-```
-
-Then world XZ is computed from the adjusted position:
-
-```hlsl
-float2 horPositionWS = rect.zw * 0.25 * (input.positionOS.xz + diff) + rect.xy;
-```
-
-This removes T-junction cracks between different LOD patches. It does not perform geomorphing, so LOD transitions can still pop.
+`Quad.asset` remains a 4x4 patch grid with edge vertices marked by vertex colors. The shader uses the neighbor mask to snap fine edge vertices onto the coarse LOD edge.
 
 ### GPU Culling
 
@@ -148,19 +149,20 @@ Terrain culling runs in `TerrainCulling.compute`, kernel `CullTerrain`.
 
 Input buffers:
 
-- `_AllInstancesPosWSBuffer`: all active `NodeInfoData`.
-- `_VisibleInstancesOnlyPosWSIDBuffer`: append buffer of visible patch IDs.
-- `result`: optional debug append buffer.
-- `_HiZStatsBuffer`: stats buffer.
+- `_AllInstancesPosWSBuffer`: all active `NodeInfoData`
+- `_VisibleInstancesOnlyPosWSIDBuffer`: append buffer of visible patch IDs
+- `result`: optional debug append buffer
+- `_HiZStatsBuffer`: stats buffer
 
 Per patch:
 
-1. Read `terrainIndex` and patch rect.
-2. Sample terrain height array at corners, center, and edge centers.
-3. Build a conservative world-space AABB from sampled min/max height plus `_TerrainHeightPadding`.
-4. Test against frustum planes.
-5. If Hi-Z is enabled, project bounds to screen, choose a mip level, sample four Hi-Z pixels, and reject occluded patches.
-6. Append visible patch ID.
+1. Read baked world rect and baked `heightMinMax`.
+2. Build a world-space AABB from the rect and min/max height.
+3. Test the AABB against frustum planes.
+4. If Hi-Z is enabled, project bounds to screen, choose a mip level, sample four Hi-Z pixels, and reject occluded patches.
+5. Append visible patch ID.
+
+The old 9-point runtime height sampling path has been removed. This makes frustum/Hi-Z bounds deterministic and conservative for the baked terrain state.
 
 Stats layout currently used by terrain:
 
@@ -195,13 +197,13 @@ The material receives:
 - `_TerrainOriginSizes`
 - `_TerrainCount`
 
-The vertex shader uses `_VisibleInstanceIDBuffer[instanceID]` to fetch the selected `NodeInfoData`.
+The vertex shader uses `_VisibleInstanceIDBuffer[instanceID]` to fetch `NodeInfoData`, maps world XZ into the baked terrain slice, samples baked height/normal arrays, and outputs displaced terrain vertices.
 
 ### Terrain Hi-Z Occluder Depth
 
 Terrain can also write itself into the Hi-Z source depth pyramid through `GPUTerrain.DrawHiZDepth()`.
 
-This uses `GPUTerrainHiZDepth.shader` and draws all terrain patch IDs, not only currently visible IDs, into mip 0 while the Hi-Z pass is building the pyramid.
+This uses `GPUTerrainHiZDepth.shader` and draws all active terrain patch IDs, not only currently visible IDs, into mip 0 while the Hi-Z pass is building the pyramid.
 
 The feature is controlled by:
 

@@ -1,83 +1,38 @@
-﻿#pragma kernel CullTerrain
+#pragma kernel CullTerrain
+#pragma multi_compile_local __ _REVERSE_Z
 
 struct NodeInfoData
 {
     float4 rect;
+    float2 heightMinMax;
     int mipmap;
     int neighbor;
     int terrainIndex;
     int padding;
 };
 
+struct TerrainBounds
+{
+    float3 minPosition;
+    float3 maxPosition;
+};
+
 float4x4 _VPMatrix;
-Texture2DArray<float4> _TerrainHeightmapTextureArray;
-Texture2D _HiZMap;
-uint depthTextureSize;
+float4x4 _HizCameraMatrixVP;
+Texture2D<float4> _HizMap;
+float4 _HizMapSize;
 uint _InstanceCount;
-uint _TerrainCount;
 bool _UseHiZ;
 bool _WriteDebugResult;
 StructuredBuffer<NodeInfoData> _AllInstancesPosWSBuffer;
-AppendStructuredBuffer<NodeInfoData> result;  //Debug
-AppendStructuredBuffer<uint> _VisibleInstancesOnlyPosWSIDBuffer; //will set counter to 0 per frame, then fill in by this compute shader
+AppendStructuredBuffer<NodeInfoData> result;
+AppendStructuredBuffer<uint> _VisibleInstancesOnlyPosWSIDBuffer;
 RWStructuredBuffer<uint> _HiZStatsBuffer;
 bool isOpenGL;
-uint _UseReversedZ;
 
-float4 _TerrainParams[64];
-float4 _TerrainOriginSizes[64];
-float _TerrainHeightPadding;
 float _FrustumPadding;
-float _HiZWorldDepthBias;
-float3 _HiZCameraPositionWS;
-
-uint GetSafeTerrainIndex(int terrainIndex)
-{
-    return (uint)clamp(terrainIndex, 0, max((int)_TerrainCount - 1, 0));
-}
-
-float SampleTerrainHeight01(float2 worldXZ, uint terrainIndex)
-{
-    uint width;
-    uint height;
-    uint slices;
-    _TerrainHeightmapTextureArray.GetDimensions(width, height, slices);
-    float4 originSize = _TerrainOriginSizes[terrainIndex];
-    float2 uv = saturate((worldXZ - originSize.xy) / max(originSize.zw, 1e-5f));
-    uint2 pixel = (uint2)round(uv * float2(width - 1, height - 1));
-    return _TerrainHeightmapTextureArray[uint3(pixel.x, pixel.y, terrainIndex)].r;
-}
-
-void IncludeTerrainHeightSample(float2 worldXZ, uint terrainIndex, inout float minHeight01, inout float maxHeight01)
-{
-    float height01 = SampleTerrainHeight01(worldXZ, terrainIndex);
-    minHeight01 = min(minHeight01, height01);
-    maxHeight01 = max(maxHeight01, height01);
-}
-
-float3 ApplyHiZWorldDepthBias(float3 positionWS)
-{
-    if (_HiZWorldDepthBias <= 0.0f)
-        return positionWS;
-
-    float3 toCamera = _HiZCameraPositionWS - positionWS;
-    return positionWS + toCamera * rsqrt(max(dot(toCamera, toCamera), 1e-6f)) * _HiZWorldDepthBias;
-}
-
-float ConvertNdcZToRawDepth(float ndcZ)
-{
-    return isOpenGL ? ndcZ * 0.5f + 0.5f : ndcZ;
-}
-
-void ResetProjectedBounds(out float minX, out float minY, out float minZ, out float maxX, out float maxY, out float maxZ)
-{
-    minX = 1e20f;
-    minY = 1e20f;
-    minZ = 1e20f;
-    maxX = -1e20f;
-    maxY = -1e20f;
-    maxZ = -1e20f;
-}
+float _HizDepthBias;
+float3 _HizCameraPositionWS;
 
 void IncludeFrustumPlaneResult(
     float4 posCS,
@@ -100,35 +55,97 @@ void IncludeFrustumPlaneResult(
     outsideFar = outsideFar && posCS.z > posCS.w + clipPadding;
 }
 
-void IncludeProjectedBounds(
-    float4 posCS,
-    inout float minX,
-    inout float minY,
-    inout float minZ,
-    inout float maxX,
-    inout float maxY,
-    inout float maxZ,
-    inout bool skipHiZ,
-    inout bool hasProjectedVertex)
+float3 TransformWorldToUVD(float3 positionWS)
 {
-    if (posCS.w <= 0.0001f)
+    float4 positionHS = mul(_HizCameraMatrixVP, float4(positionWS, 1.0f));
+    float3 uvd = positionHS.xyz / positionHS.w;
+    uvd.xy = (uvd.xy + 1.0f) * 0.5f;
+
+    if (uvd.z < 0.0f)
     {
-        skipHiZ = true;
-        return;
+#if _REVERSE_Z
+        uvd.z = 1.0f;
+#else
+        uvd.z = 0.0f;
+#endif
     }
 
-    float3 ndc = posCS.xyz / posCS.w;
-    minX = min(minX, ndc.x);
-    minY = min(minY, ndc.y);
-    minZ = min(minZ, ndc.z);
-    maxX = max(maxX, ndc.x);
-    maxY = max(maxY, ndc.y);
-    maxZ = max(maxZ, ndc.z);
-    hasProjectedVertex = true;
+    return uvd;
+}
+
+TerrainBounds GetBoundsUVD(TerrainBounds boundsWS)
+{
+    TerrainBounds boundsUVD;
+
+    float3 boundsMin = boundsWS.minPosition;
+    float3 boundsMax = boundsWS.maxPosition;
+
+    float3 p0 = TransformWorldToUVD(boundsMin);
+    float3 p1 = TransformWorldToUVD(boundsMax);
+    float3 p2 = TransformWorldToUVD(float3(boundsMin.x, boundsMin.y, boundsMax.z));
+    float3 p3 = TransformWorldToUVD(float3(boundsMin.x, boundsMax.y, boundsMin.z));
+    float3 p4 = TransformWorldToUVD(float3(boundsMin.x, boundsMax.y, boundsMax.z));
+    float3 p5 = TransformWorldToUVD(float3(boundsMax.x, boundsMin.y, boundsMax.z));
+    float3 p6 = TransformWorldToUVD(float3(boundsMax.x, boundsMax.y, boundsMin.z));
+    float3 p7 = TransformWorldToUVD(float3(boundsMax.x, boundsMin.y, boundsMin.z));
+
+    float3 min1 = min(min(p0, p1), min(p2, p3));
+    float3 min2 = min(min(p4, p5), min(p6, p7));
+    boundsUVD.minPosition = min(min1, min2);
+
+    float3 max1 = max(max(p0, p1), max(p2, p3));
+    float3 max2 = max(max(p4, p5), max(p6, p7));
+    boundsUVD.maxPosition = max(max1, max2);
+    return boundsUVD;
+}
+
+uint GetHizMip(TerrainBounds boundsUVD)
+{
+    float3 minP = boundsUVD.minPosition;
+    float3 maxP = boundsUVD.maxPosition;
+    float2 size = (maxP.xy - minP.xy) * _HizMapSize.x;
+    uint2 mip2 = (uint2)ceil(log2(size));
+    uint mip = clamp(max(mip2.x, mip2.y), 1u, (uint)_HizMapSize.z - 1u);
+    return mip;
+}
+
+float SampleHiz(float2 uv, uint mip, float mipTexSize)
+{
+    uint2 coord = (uint2)floor(uv * mipTexSize);
+    uint mipTexSizeRounded = (uint)round(mipTexSize);
+    coord = min(coord, uint2(mipTexSizeRounded - 1u, mipTexSizeRounded - 1u));
+    return _HizMap.mips[mip][coord].r;
+}
+
+bool HizOcclusionCull(TerrainBounds bounds)
+{
+    bounds.minPosition -= normalize(bounds.minPosition - _HizCameraPositionWS) * _HizDepthBias;
+    bounds.maxPosition -= normalize(bounds.maxPosition - _HizCameraPositionWS) * _HizDepthBias;
+
+    TerrainBounds boundsUVD = GetBoundsUVD(bounds);
+
+    uint mip = GetHizMip(boundsUVD);
+
+    float3 minP = boundsUVD.minPosition;
+    float3 maxP = boundsUVD.maxPosition;
+
+    float mipTexSize = round(_HizMapSize.x / pow(2.0f, (float)mip));
+    float d1 = SampleHiz(minP.xy, mip, mipTexSize);
+    float d2 = SampleHiz(maxP.xy, mip, mipTexSize);
+    float d3 = SampleHiz(float2(minP.x, maxP.y), mip, mipTexSize);
+    float d4 = SampleHiz(float2(maxP.x, minP.y), mip, mipTexSize);
+
+#if _REVERSE_Z
+    float depth = maxP.z;
+    return d1 > depth && d2 > depth && d3 > depth && d4 > depth;
+#else
+    float depth = minP.z;
+    return d1 < depth && d2 < depth && d3 < depth && d4 < depth;
+#endif
 }
 
 [numthreads(64,1,1)]
-void CullTerrain (uint3 id : SV_DispatchThreadID)
+void CullTerrain(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= _InstanceCount)
         return;
@@ -136,53 +153,33 @@ void CullTerrain (uint3 id : SV_DispatchThreadID)
     InterlockedAdd(_HiZStatsBuffer[3], 1);
 
     NodeInfoData nodeInfo = _AllInstancesPosWSBuffer[id.x];
-    uint terrainIndex = GetSafeTerrainIndex(nodeInfo.terrainIndex);
-    float4 terrainDataParam = _TerrainParams[terrainIndex];
     float4 nowRect = nodeInfo.rect;
     float2 minPos = nowRect.xy;
     float2 maxPos = nowRect.xy + nowRect.zw;
-    float2 centerPos = (minPos + maxPos) * 0.5f;
-    float minHeight01 = 1.0f;
-    float maxHeight01 = 0.0f;
-    IncludeTerrainHeightSample(minPos, terrainIndex, minHeight01, maxHeight01);
-    IncludeTerrainHeightSample(maxPos, terrainIndex, minHeight01, maxHeight01);
-    IncludeTerrainHeightSample(float2(minPos.x, maxPos.y), terrainIndex, minHeight01, maxHeight01);
-    IncludeTerrainHeightSample(float2(maxPos.x, minPos.y), terrainIndex, minHeight01, maxHeight01);
-    IncludeTerrainHeightSample(centerPos, terrainIndex, minHeight01, maxHeight01);
-    IncludeTerrainHeightSample(float2(centerPos.x, minPos.y), terrainIndex, minHeight01, maxHeight01);
-    IncludeTerrainHeightSample(float2(centerPos.x, maxPos.y), terrainIndex, minHeight01, maxHeight01);
-    IncludeTerrainHeightSample(float2(minPos.x, centerPos.y), terrainIndex, minHeight01, maxHeight01);
-    IncludeTerrainHeightSample(float2(maxPos.x, centerPos.y), terrainIndex, minHeight01, maxHeight01);
-    float terrainHeightSize = terrainDataParam.y;
-    float minHeight = terrainDataParam.w + terrainHeightSize * minHeight01 - _TerrainHeightPadding;
-    float maxHeight = terrainDataParam.w + terrainHeightSize * maxHeight01 + _TerrainHeightPadding;
-    // Bounds are built in world XZ because NodeInfo.rect is already world-space.
+    float minHeight = nodeInfo.heightMinMax.x;
+    float maxHeight = nodeInfo.heightMinMax.y;
+
     float4 boundVerts[8];
-    boundVerts[0] = float4(minPos.x, minHeight, minPos.y, 1);
-    boundVerts[1] = float4(minPos.x, minHeight, maxPos.y, 1);
-    boundVerts[2] = float4(maxPos.x, minHeight, minPos.y, 1);
-    boundVerts[3] = float4(maxPos.x, minHeight, maxPos.y, 1);
-    boundVerts[4] = float4(minPos.x, maxHeight, minPos.y, 1);
-    boundVerts[5] = float4(minPos.x, maxHeight, maxPos.y, 1);
-    boundVerts[6] = float4(maxPos.x, maxHeight, minPos.y, 1);
-    boundVerts[7] = float4(maxPos.x, maxHeight, maxPos.y, 1);
-    
-    float minX, minY, minZ, maxX, maxY, maxZ;
-    ResetProjectedBounds(minX, minY, minZ, maxX, maxY, maxZ);
+    boundVerts[0] = float4(minPos.x, minHeight, minPos.y, 1.0f);
+    boundVerts[1] = float4(minPos.x, minHeight, maxPos.y, 1.0f);
+    boundVerts[2] = float4(maxPos.x, minHeight, minPos.y, 1.0f);
+    boundVerts[3] = float4(maxPos.x, minHeight, maxPos.y, 1.0f);
+    boundVerts[4] = float4(minPos.x, maxHeight, minPos.y, 1.0f);
+    boundVerts[5] = float4(minPos.x, maxHeight, maxPos.y, 1.0f);
+    boundVerts[6] = float4(maxPos.x, maxHeight, minPos.y, 1.0f);
+    boundVerts[7] = float4(maxPos.x, maxHeight, maxPos.y, 1.0f);
+
     bool outsideLeft = true;
     bool outsideRight = true;
     bool outsideBottom = true;
     bool outsideTop = true;
     bool outsideNear = true;
     bool outsideFar = true;
-    bool skipHiZ = false;
-    bool hasProjectedVertex = false;
     [unroll]
     for (int i = 0; i < 8; i++)
     {
         float4 posCS = mul(_VPMatrix, boundVerts[i]);
         IncludeFrustumPlaneResult(posCS, outsideLeft, outsideRight, outsideBottom, outsideTop, outsideNear, outsideFar);
-        IncludeProjectedBounds(posCS, minX, minY, minZ, maxX, maxY, maxZ, skipHiZ, hasProjectedVertex);
     }
 
     if (outsideLeft || outsideRight || outsideBottom || outsideTop || outsideNear || outsideFar)
@@ -193,63 +190,14 @@ void CullTerrain (uint3 id : SV_DispatchThreadID)
 
     InterlockedAdd(_HiZStatsBuffer[4], 1);
 
-    if (_HiZWorldDepthBias > 0.0f)
+    if (_UseHiZ)
     {
-        ResetProjectedBounds(minX, minY, minZ, maxX, maxY, maxZ);
-        hasProjectedVertex = false;
+        TerrainBounds bounds;
+        bounds.minPosition = float3(minPos.x, minHeight, minPos.y);
+        bounds.maxPosition = float3(maxPos.x, maxHeight, maxPos.y);
 
-        [unroll]
-        for (int i = 0; i < 8; i++)
-        {
-            float3 hizPositionWS = ApplyHiZWorldDepthBias(boundVerts[i].xyz);
-            float4 posCS = mul(_VPMatrix, float4(hizPositionWS, 1.0f));
-            IncludeProjectedBounds(posCS, minX, minY, minZ, maxX, maxY, maxZ, skipHiZ, hasProjectedVertex);
-        }
-    }
-
-    if (!hasProjectedVertex)
-        skipHiZ = true;
-
-    if (!_UseHiZ || skipHiZ)
-    {
-        if (_UseHiZ)
-            InterlockedAdd(_HiZStatsBuffer[2], 1);
-        _VisibleInstancesOnlyPosWSIDBuffer.Append(id.x);
-        if (_WriteDebugResult)
-            result.Append(_AllInstancesPosWSBuffer[id.x]);
-        return;
-    }
-
-    // Hi-Z occlusion culling. Use the same conservative idea as the reference project:
-    // all sampled corners in the selected mip must be closer than the biased terrain bounds.
-    float2 uvLeftBottom = saturate(float2(minX, minY) * 0.5f + 0.5f);
-    float2 uvRightTop = saturate(float2(maxX, maxY) * 0.5f + 0.5f);
-    bool useReversedZ = _UseReversedZ != 0;
-    float depth = ConvertNdcZToRawDepth(useReversedZ ? maxZ : minZ);
-    // Select mip by projected screen-space size.
-    float projectedSize = max(maxX - minX, maxY - minY) * 0.5f * depthTextureSize;
-    float maxMipLevel = max(0.0f, log2(depthTextureSize) - 4.0f);
-    uint mipmapLevel = (uint)clamp(log2(max(projectedSize, 1.0f)), 0.0f, maxMipLevel);
-    // Current mip size.
-    uint size = depthTextureSize / (1 << mipmapLevel);
-    // Corner pixels in the selected mip.
-    float maxPixel = (float)(size - 1);
-    uint2 pixelLeftBottom = uint2(
-        clamp(floor(uvLeftBottom.x * (float)size), 0.0f, maxPixel),
-        clamp(floor(uvLeftBottom.y * (float)size), 0.0f, maxPixel));
-    uint2 pixelRightTop = uint2(
-        clamp(floor(uvRightTop.x * (float)size), 0.0f, maxPixel),
-        clamp(floor(uvRightTop.y * (float)size), 0.0f, maxPixel));
-    // Compare against the conservative depth from the selected mip.
-    float d1 = _HiZMap.mips[mipmapLevel][pixelLeftBottom].r;
-    float d2 = _HiZMap.mips[mipmapLevel][pixelRightTop].r;
-    float d3 = _HiZMap.mips[mipmapLevel][int2(pixelLeftBottom.x, pixelRightTop.y)].r;
-    float d4 = _HiZMap.mips[mipmapLevel][int2(pixelRightTop.x, pixelLeftBottom.y)].r;
-    InterlockedAdd(_HiZStatsBuffer[0], 1);
-    if (useReversedZ)
-    {
-        float depthInTexture = min(min(d1, d2), min(d3, d4));
-        if (depthInTexture > depth)
+        InterlockedAdd(_HiZStatsBuffer[0], 1);
+        if (HizOcclusionCull(bounds))
         {
             InterlockedAdd(_HiZStatsBuffer[1], 1);
             return;
@@ -257,14 +205,9 @@ void CullTerrain (uint3 id : SV_DispatchThreadID)
     }
     else
     {
-        float depthInTexture = max(max(d1, d2), max(d3, d4));
-        if (depthInTexture < depth)
-        {
-            InterlockedAdd(_HiZStatsBuffer[1], 1);
-            return;
-        }
+        InterlockedAdd(_HiZStatsBuffer[2], 1);
     }
-    
+
     _VisibleInstancesOnlyPosWSIDBuffer.Append(id.x);
     if (_WriteDebugResult)
         result.Append(_AllInstancesPosWSBuffer[id.x]);

@@ -81,29 +81,18 @@ public static class GpuDrivenUrpSetup
     private static void ConfigureHizFeature(GpuDrivenHizFeature hizFeature)
     {
         SerializedObject serializedFeature = new SerializedObject(hizFeature);
-        SerializedProperty mipmapShader = serializedFeature.FindProperty("mipmapShader");
-        SerializedProperty depthCopyShader = serializedFeature.FindProperty("depthCopyShader");
-        SerializedProperty terrainDepthShader = serializedFeature.FindProperty("terrainDepthShader");
+        SerializedProperty hizMapCompute = serializedFeature.FindProperty("hizMapCompute");
         SerializedProperty passEvent = serializedFeature.FindProperty("passEvent");
 
-        if (mipmapShader != null)
+        if (hizMapCompute != null)
         {
-            mipmapShader.objectReferenceValue = Shader.Find("ComputeShader/DepthTextureMipmapCalculator");
-        }
-
-        if (depthCopyShader != null)
-        {
-            depthCopyShader.objectReferenceValue = Shader.Find("GPU Driven/URP Depth To RFloat");
-        }
-
-        if (terrainDepthShader != null)
-        {
-            terrainDepthShader.objectReferenceValue = Shader.Find("GPU Driven/GPUTerrain Hi-Z Depth");
+            hizMapCompute.objectReferenceValue = AssetDatabase.LoadAssetAtPath<ComputeShader>(
+                "Assets/GPUDrivenShowcase/Shaders/GpuDrivenHizMap.compute");
         }
 
         if (passEvent != null)
         {
-            passEvent.intValue = (int)RenderPassEvent.AfterRenderingOpaques;
+            passEvent.intValue = (int)RenderPassEvent.BeforeRenderingTransparents;
         }
 
         serializedFeature.ApplyModifiedPropertiesWithoutUndo();

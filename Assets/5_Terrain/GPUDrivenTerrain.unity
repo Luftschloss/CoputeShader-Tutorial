@@ -122,7 +122,7 @@ NavMeshSettings:
     debug:
       m_Flags: 0
   m_NavMeshData: {fileID: 0}
---- !u!84 &41420019
+--- !u!84 &108872467
 RenderTexture:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -189,7 +189,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 74a0cfef618ac9546b5e7312f7f56c4c, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  bakedData: {fileID: 0}
+  bakedData: {fileID: 11400000, guid: 763171e426e960149ba72a7ff100cfa3, type: 2}
   instanceMesh: {fileID: 4300000, guid: 7061489f52d4a4548b85c4df63bfaa70, type: 2}
   lodDistance:
   - 100
@@ -197,7 +197,7 @@ MonoBehaviour:
   - 500
   - 1000
   lodRebuildDistanceThreshold: 0.5
-  writeTerrainDepthToHiZ: 1
+  writeTerrainDepthToHiZ: 0
   hizDepthBias: 1
   frustumPadding: 0.03
   castShadowMap: 0
@@ -283,7 +283,7 @@ Camera:
     width: 1
     height: 1
   near clip plane: 5
-  far clip plane: 1000
+  far clip plane: 2000
   field of view: 60
   orthographic: 0
   orthographic size: 5
@@ -331,7 +331,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   depthTextureShader: {fileID: 4800000, guid: f8fcddc59c8584e43b507f8fc5b42991, type: 3}
-  depthTexture: {fileID: 41420019}
+  depthTexture: {fileID: 108872467}
   depthType: 1
   textureSizeMode: 0
   resolutionScale: 1
@@ -466,6 +466,11 @@ PrefabInstance:
         type: 3}
       propertyPath: m_Name
       value: TerrainHigh
+      objectReference: {fileID: 0}
+    - target: {fileID: 257142241851313760, guid: f514be6126461c64eab6f02358f894f3,
+        type: 3}
+      propertyPath: m_IsActive
+      value: 0
       objectReference: {fileID: 0}
     - target: {fileID: 257142241851313763, guid: f514be6126461c64eab6f02358f894f3,
         type: 3}

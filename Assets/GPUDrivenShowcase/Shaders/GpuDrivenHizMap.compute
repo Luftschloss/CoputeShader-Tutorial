@@ -1,0 +1,67 @@
+#pragma kernel Blit
+#pragma kernel CSMain
+
+#pragma multi_compile_local __ _REVERSE_Z
+#pragma multi_compile_local __ _PING_PONG_COPY
+
+Texture2D<float4> InTex;
+RWTexture2D<float4> MipCopyTex;
+RWTexture2D<float4> MipTex;
+
+float2 _SrcTexSize;
+float2 _InputTexSize;
+float2 _DstTexSize;
+uint _Mip;
+
+[numthreads(8, 8, 1)]
+void Blit(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _DstTexSize.x || id.y >= _DstTexSize.y)
+    {
+        return;
+    }
+
+    uint2 srcXY = floor(id.xy * _SrcTexSize / _DstTexSize);
+    srcXY = min(srcXY, (uint2)_SrcTexSize - 1);
+    MipTex[id.xy] = InTex[srcXY];
+#if _PING_PONG_COPY
+    MipCopyTex[id.xy] = InTex[srcXY];
+#endif
+}
+
+[numthreads(8, 8, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _DstTexSize.x || id.y >= _DstTexSize.y)
+    {
+        return;
+    }
+
+    uint2 maxInputCoord = (uint2)_InputTexSize - 1;
+    uint2 coord = min(2 * id.xy, maxInputCoord);
+    uint2 coord10 = min(coord + uint2(1, 0), maxInputCoord);
+    uint2 coord01 = min(coord + uint2(0, 1), maxInputCoord);
+    uint2 coord11 = min(coord + uint2(1, 1), maxInputCoord);
+#if _PING_PONG_COPY
+    float d1 = InTex[coord].r;
+    float d2 = InTex[coord10].r;
+    float d3 = InTex[coord01].r;
+    float d4 = InTex[coord11].r;
+#else
+    float d1 = InTex.mips[_Mip - 1][coord].r;
+    float d2 = InTex.mips[_Mip - 1][coord10].r;
+    float d3 = InTex.mips[_Mip - 1][coord01].r;
+    float d4 = InTex.mips[_Mip - 1][coord11].r;
+#endif
+
+#if _REVERSE_Z
+    float d = min(min(d1, d2), min(d3, d4));
+#else
+    float d = max(max(d1, d2), max(d3, d4));
+#endif
+
+    MipTex[id.xy] = d;
+#if _PING_PONG_COPY
+    MipCopyTex[id.xy] = d;
+#endif
+}

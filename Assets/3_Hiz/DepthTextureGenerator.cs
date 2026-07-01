@@ -45,6 +45,15 @@ public class DepthTextureGenerator : MonoBehaviour
         }
     }
 
+    public int DepthTextureMipCount
+    {
+        get
+        {
+            EnsureDepthTexture();
+            return depthTexture != null ? depthTexture.mipmapCount : 0;
+        }
+    }
+
     public RenderTextureFormat DepthTextureFormat => useExternalDepthTexture && depthTexture != null
         ? depthTexture.format
         : GetConfiguredDepthTextureFormat();
@@ -60,6 +69,11 @@ public class DepthTextureGenerator : MonoBehaviour
     CommandBuffer depthMipmapGenerateCMD;
     Camera ownerCamera;
     bool useBuiltinCommandBuffer;
+    Camera lastHiZCamera;
+    Vector3 lastHiZCameraPosition;
+    Matrix4x4 lastHiZMatrixVP = Matrix4x4.identity;
+    Vector4 lastHiZMapSize;
+    int lastHiZUpdateFrame = -1;
 
 
     void Start()
@@ -94,6 +108,7 @@ public class DepthTextureGenerator : MonoBehaviour
 
     public void ForceRebuildDepthTexture()
     {
+        InvalidateHiZHistory();
         if (useExternalDepthTexture)
         {
             if (depthTexture != null && !depthTexture.IsCreated())
@@ -108,15 +123,63 @@ public class DepthTextureGenerator : MonoBehaviour
         EnsureDepthTexture();
     }
 
+    public void MarkHiZUpdated(Camera sourceCamera)
+    {
+        Matrix4x4 matrixVP = sourceCamera != null
+            ? GL.GetGPUProjectionMatrix(sourceCamera.projectionMatrix, false) * sourceCamera.worldToCameraMatrix
+            : Matrix4x4.identity;
+        MarkHiZUpdated(sourceCamera, matrixVP);
+    }
+
+    public void MarkHiZUpdated(Camera sourceCamera, Matrix4x4 hizMatrixVP)
+    {
+        if (sourceCamera == null)
+        {
+            InvalidateHiZHistory();
+            return;
+        }
+
+        lastHiZCamera = sourceCamera;
+        lastHiZCameraPosition = sourceCamera.transform.position;
+        lastHiZMatrixVP = hizMatrixVP;
+        lastHiZMapSize = depthTexture != null
+            ? new Vector4(depthTexture.width, depthTexture.height, depthTexture.mipmapCount, 0.0f)
+            : Vector4.zero;
+        lastHiZUpdateFrame = Time.frameCount;
+    }
+
+    public bool TryGetCurrentHiZ(Camera sourceCamera, out RenderTexture hizMap, out Vector4 hizMapSize, out Matrix4x4 hizMatrixVP, out Vector3 hizCameraPositionWS)
+    {
+        if (sourceCamera == null || depthTexture == null || lastHiZUpdateFrame < 0 || lastHiZCamera != sourceCamera)
+        {
+            hizMap = null;
+            hizMapSize = Vector4.zero;
+            hizMatrixVP = Matrix4x4.identity;
+            hizCameraPositionWS = sourceCamera != null ? sourceCamera.transform.position : Vector3.zero;
+            return false;
+        }
+
+        hizMap = depthTexture;
+        hizMapSize = lastHiZMapSize;
+        hizMatrixVP = lastHiZMatrixVP;
+        hizCameraPositionWS = lastHiZCameraPosition;
+        return true;
+    }
+
     void EnsureDepthTexture()
     {
         if (useExternalDepthTexture)
         {
+            bool wasCreated = depthTexture != null && depthTexture.IsCreated();
             if (depthTexture != null && !depthTexture.IsCreated())
             {
                 depthTexture.Create();
             }
             depthTextureSize = depthTexture != null ? depthTexture.width : 0;
+            if (!wasCreated && depthTexture != null)
+            {
+                InvalidateHiZHistory();
+            }
             return;
         }
 
@@ -126,7 +189,9 @@ public class DepthTextureGenerator : MonoBehaviour
             depthTexture.IsCreated() &&
             depthTexture.width == targetSize &&
             depthTexture.height == targetSize &&
-            depthTexture.format == targetFormat)
+            depthTexture.format == targetFormat &&
+            depthTexture.useMipMap &&
+            depthTexture.enableRandomWrite)
         {
             depthTextureSize = targetSize;
             return;
@@ -137,10 +202,12 @@ public class DepthTextureGenerator : MonoBehaviour
         depthTexture.name = "GPU Driven Hi-Z Depth";
         depthTexture.autoGenerateMips = false;
         depthTexture.useMipMap = true;
+        depthTexture.enableRandomWrite = true;
         depthTexture.filterMode = FilterMode.Point;
         depthTexture.wrapMode = TextureWrapMode.Clamp;
         depthTexture.Create();
         depthTextureSize = targetSize;
+        InvalidateHiZHistory();
     }
 
     int CalculateDepthTextureSize()
@@ -178,6 +245,7 @@ public class DepthTextureGenerator : MonoBehaviour
             DestroyImmediate(depthTexture);
         }
         depthTexture = null;
+        InvalidateHiZHistory();
     }
 
     //生成DepthMipmap
@@ -200,12 +268,10 @@ public class DepthTextureGenerator : MonoBehaviour
             return;
 
         int w = depthTexture.width;
-        int mipmapLevel = 0;
         RenderTexture currentRenderTexture = null;//当前mipmapLevel对应的mipmap
         RenderTexture preRenderTexture = null;//上一层的mipmap，即mipmapLevel-1对应的mipmap
 
-        //如果当前的mipmap的宽高大于8，则计算下一层的mipmap
-        while (w > 8)
+        for (int mipmapLevel = 0; mipmapLevel < depthTexture.mipmapCount; mipmapLevel++)
         {
             currentRenderTexture = RenderTexture.GetTemporary(w, w, 0, DepthTextureFormat);
             currentRenderTexture.filterMode = FilterMode.Point;
@@ -219,14 +285,14 @@ public class DepthTextureGenerator : MonoBehaviour
                 //将Mipmap[i] Blit到Mipmap[i+1]上
                 depthMipmapGenerateCMD.Blit(preRenderTexture, currentRenderTexture, depthTextureMaterial);
                 RenderTexture.ReleaseTemporary(preRenderTexture);
-            }
-            depthMipmapGenerateCMD.CopyTexture(currentRenderTexture, 0, 0, depthTexture, 0, mipmapLevel);
-            preRenderTexture = currentRenderTexture;
+        }
+        depthMipmapGenerateCMD.CopyTexture(currentRenderTexture, 0, 0, depthTexture, 0, mipmapLevel);
+        preRenderTexture = currentRenderTexture;
 
-            w /= 2;
-            mipmapLevel++;
+        w = Mathf.Max(1, w / 2);
         }
         RenderTexture.ReleaseTemporary(preRenderTexture);
+        MarkHiZUpdated(ownerCamera);
     }
    
 
@@ -258,6 +324,13 @@ public class DepthTextureGenerator : MonoBehaviour
         minTextureSize = Mathf.Max(8, Mathf.NextPowerOfTwo(Mathf.Max(1, minTextureSize)));
         maxTextureSize = Mathf.Max(minTextureSize, Mathf.NextPowerOfTwo(Mathf.Max(1, maxTextureSize)));
         depthTextureSize = 0;
+        InvalidateHiZHistory();
+    }
+
+    void InvalidateHiZHistory()
+    {
+        lastHiZCamera = null;
+        lastHiZUpdateFrame = -1;
     }
 
     public enum DepthType

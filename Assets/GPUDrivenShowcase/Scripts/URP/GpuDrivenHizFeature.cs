@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
@@ -7,35 +6,28 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
 {
     public static int LastTerrainDepthDrawCount { get; private set; }
 
-    [SerializeField] private Shader mipmapShader;
-    [SerializeField] private Shader depthCopyShader;
-    [SerializeField] private Shader terrainDepthShader;
-    [SerializeField] private RenderPassEvent passEvent = RenderPassEvent.AfterRenderingOpaques;
-    [SerializeField] private bool flipDepthY;
+    [SerializeField] private ComputeShader hizMapCompute;
+    [SerializeField] private RenderPassEvent passEvent = RenderPassEvent.BeforeRenderingTransparents;
 
     private GpuDrivenHizPass pass;
-    private bool enqueuePass;
-    private static readonly int FlipYId = Shader.PropertyToID("_FlipY");
-    private RenderPassEvent EffectivePassEvent => passEvent < RenderPassEvent.AfterRenderingOpaques
-        ? RenderPassEvent.AfterRenderingOpaques
-        : passEvent;
+    public static bool IsTerrainDepthInjectionEnabled { get; private set; }
+    private RenderPassEvent EffectivePassEvent => passEvent;
 
     public override void Create()
     {
-        if (mipmapShader == null)
+#if UNITY_EDITOR
+        if (hizMapCompute == null)
         {
-            mipmapShader = Shader.Find("ComputeShader/DepthTextureMipmapCalculator");
+            hizMapCompute = UnityEditor.AssetDatabase.LoadAssetAtPath<ComputeShader>(
+                "Assets/GPUDrivenShowcase/Shaders/GpuDrivenHizMap.compute");
         }
-        if (depthCopyShader == null)
+#endif
+        if (hizMapCompute == null)
         {
-            depthCopyShader = Shader.Find("GPU Driven/URP Depth To RFloat");
-        }
-        if (terrainDepthShader == null)
-        {
-            terrainDepthShader = Shader.Find("GPU Driven/GPUTerrain Hi-Z Depth");
+            Debug.LogError("GPU Driven Hi-Z compute shader is missing.");
         }
 
-        pass = new GpuDrivenHizPass(depthCopyShader, mipmapShader, terrainDepthShader)
+        pass = new GpuDrivenHizPass(hizMapCompute)
         {
             renderPassEvent = EffectivePassEvent
         };
@@ -43,37 +35,23 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
 
     public override void SetupRenderPasses(ScriptableRenderer renderer, in RenderingData renderingData)
     {
-        pass?.ClearSetup();
-
-        if (!enqueuePass || pass == null || !pass.IsValid)
-        {
-            return;
-        }
-
-        DepthTextureGenerator generator = ResolveDepthTextureGenerator(renderingData.cameraData.camera);
-        if (generator == null || !generator.useHiz || generator.DepthTexture == null)
-        {
-            return;
-        }
-
-        pass.Setup(generator);
     }
 
     public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
     {
-        enqueuePass = false;
+        pass?.ClearSetup();
+        LastTerrainDepthDrawCount = 0;
+        IsTerrainDepthInjectionEnabled = false;
 
         if (pass == null || !pass.IsValid)
         {
             return;
         }
 
-        if (renderingData.cameraData.isPreviewCamera)
+        if (renderingData.cameraData.isSceneViewCamera || renderingData.cameraData.isPreviewCamera)
         {
             return;
         }
-
-        LastTerrainDepthDrawCount = 0;
 
         DepthTextureGenerator generator = ResolveDepthTextureGenerator(renderingData.cameraData.camera);
         if (generator == null || !generator.useHiz || generator.DepthTexture == null)
@@ -82,13 +60,14 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
         }
 
         pass.renderPassEvent = EffectivePassEvent;
-        pass.SetFlipY(flipDepthY);
-        enqueuePass = true;
+        pass.Setup(generator);
         renderer.EnqueuePass(pass);
     }
 
     protected override void Dispose(bool disposing)
     {
+        LastTerrainDepthDrawCount = 0;
+        IsTerrainDepthInjectionEnabled = false;
         pass?.Dispose();
         pass = null;
     }
@@ -102,11 +81,6 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
             {
                 return generator;
             }
-
-            if (camera.cameraType == CameraType.SceneView)
-            {
-                return Object.FindObjectOfType<DepthTextureGenerator>(true);
-            }
         }
 
         return null;
@@ -114,18 +88,28 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
 
     private sealed class GpuDrivenHizPass : ScriptableRenderPass
     {
-        private readonly Material mipmapMaterial;
-        private readonly Material depthCopyMaterial;
-        private readonly Material terrainDepthMaterial;
+        private const int BlitKernel = 0;
+        private const int ReduceKernel = 1;
+        private readonly ComputeShader hizMapCompute;
         private DepthTextureGenerator generator;
 
-        public bool IsValid => mipmapMaterial != null && depthCopyMaterial != null;
+        private static readonly int InTexId = Shader.PropertyToID("InTex");
+        private static readonly int MipTexId = Shader.PropertyToID("MipTex");
+        private static readonly int MipCopyTexId = Shader.PropertyToID("MipCopyTex");
+        private static readonly int PingTexId = Shader.PropertyToID("GpuDrivenHizPingTex");
+        private static readonly int PongTexId = Shader.PropertyToID("GpuDrivenHizPongTex");
+        private static readonly int SrcTexSizeId = Shader.PropertyToID("_SrcTexSize");
+        private static readonly int InputTexSizeId = Shader.PropertyToID("_InputTexSize");
+        private static readonly int DstTexSizeId = Shader.PropertyToID("_DstTexSize");
+        private static readonly int MipId = Shader.PropertyToID("_Mip");
+        private static readonly RenderTargetIdentifier CameraDepthTexture = new RenderTargetIdentifier("_CameraDepthTexture");
 
-        public GpuDrivenHizPass(Shader depthCopyShader, Shader mipmapShader, Shader terrainDepthShader)
+        public bool IsValid => hizMapCompute != null;
+
+        public GpuDrivenHizPass(ComputeShader hizMapCompute)
         {
-            depthCopyMaterial = depthCopyShader != null ? CoreUtils.CreateEngineMaterial(depthCopyShader) : null;
-            mipmapMaterial = mipmapShader != null ? CoreUtils.CreateEngineMaterial(mipmapShader) : null;
-            terrainDepthMaterial = terrainDepthShader != null ? CoreUtils.CreateEngineMaterial(terrainDepthShader) : null;
+            this.hizMapCompute = hizMapCompute;
+            ConfigureKeywords();
             ConfigureInput(ScriptableRenderPassInput.Depth);
         }
 
@@ -139,14 +123,6 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
             generator = null;
         }
 
-        public void SetFlipY(bool value)
-        {
-            if (depthCopyMaterial != null)
-            {
-                depthCopyMaterial.SetFloat(FlipYId, value ? 1.0f : 0.0f);
-            }
-        }
-
         public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
         {
             LastTerrainDepthDrawCount = 0;
@@ -157,72 +133,117 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
             }
 
             CommandBuffer cmd = CommandBufferPool.Get("GPU Driven Hi-Z Pyramid");
-            RenderTexture previous = null;
-            RenderTexture current = null;
-            List<RenderTexture> temporaries = new List<RenderTexture>(16);
-            int width = depthTexture.width;
-            int mip = 0;
-            RenderTextureFormat depthTextureFormat = generator.DepthTextureFormat;
+            int dstWidth = depthTexture.width;
+            int dstHeight = depthTexture.height;
+            uint threadX;
+            uint threadY;
+            uint threadZ;
+            hizMapCompute.GetKernelThreadGroupSizes(BlitKernel, out threadX, out threadY, out threadZ);
 
-            while (width > 8)
+            cmd.SetComputeTextureParam(hizMapCompute, BlitKernel, InTexId, CameraDepthTexture);
+            cmd.SetComputeTextureParam(hizMapCompute, BlitKernel, MipTexId, depthTexture, 0);
+            cmd.SetComputeVectorParam(hizMapCompute, SrcTexSizeId, new Vector4(
+                renderingData.cameraData.camera.pixelWidth,
+                renderingData.cameraData.camera.pixelHeight,
+                0.0f,
+                0.0f));
+            cmd.SetComputeVectorParam(hizMapCompute, DstTexSizeId, new Vector4(dstWidth, dstHeight, 0.0f, 0.0f));
+
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+            GetTempHizMapTexture(cmd, PingTexId, depthTexture.width, generator.DepthTextureFormat);
+            cmd.SetComputeTextureParam(hizMapCompute, BlitKernel, MipCopyTexId, new RenderTargetIdentifier(PingTexId));
+#endif
+
+            int groupX = Mathf.CeilToInt(dstWidth / (float)threadX);
+            int groupY = Mathf.CeilToInt(dstHeight / (float)threadY);
+            cmd.DispatchCompute(hizMapCompute, BlitKernel, groupX, groupY, 1);
+
+            hizMapCompute.GetKernelThreadGroupSizes(ReduceKernel, out threadX, out threadY, out threadZ);
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+            cmd.SetComputeTextureParam(hizMapCompute, ReduceKernel, InTexId, new RenderTargetIdentifier(PingTexId));
+#else
+            cmd.SetComputeTextureParam(hizMapCompute, ReduceKernel, InTexId, depthTexture);
+#endif
+
+            int pingTex = PingTexId;
+            int pongTex = PongTexId;
+            for (int mip = 1; mip < depthTexture.mipmapCount; mip++)
             {
-                current = RenderTexture.GetTemporary(width, width, 0, depthTextureFormat);
-                current.filterMode = FilterMode.Point;
-                current.wrapMode = TextureWrapMode.Clamp;
-                temporaries.Add(current);
+                int inputWidth = dstWidth;
+                int inputHeight = dstHeight;
+                dstWidth = Mathf.CeilToInt(dstWidth / 2.0f);
+                dstHeight = Mathf.CeilToInt(dstHeight / 2.0f);
+                cmd.SetComputeVectorParam(hizMapCompute, InputTexSizeId, new Vector4(inputWidth, inputHeight, 0.0f, 0.0f));
+                cmd.SetComputeVectorParam(hizMapCompute, DstTexSizeId, new Vector4(dstWidth, dstHeight, 0.0f, 0.0f));
+                cmd.SetComputeIntParam(hizMapCompute, MipId, mip);
+                cmd.SetComputeTextureParam(hizMapCompute, ReduceKernel, MipTexId, depthTexture, mip);
 
-                if (previous == null)
-                {
-                    cmd.SetRenderTarget(current);
-                    cmd.DrawProcedural(Matrix4x4.identity, depthCopyMaterial, 0, MeshTopology.Triangles, 3, 1);
-                    LastTerrainDepthDrawCount = DrawGpuTerrainDepth(cmd);
-                }
-                else
-                {
-                    cmd.Blit(previous, current, mipmapMaterial);
-                }
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+                GetTempHizMapTexture(cmd, pongTex, dstWidth, generator.DepthTextureFormat);
+                cmd.SetComputeTextureParam(hizMapCompute, ReduceKernel, MipCopyTexId, new RenderTargetIdentifier(pongTex));
+#endif
 
-                cmd.CopyTexture(current, 0, 0, depthTexture, 0, mip);
-                previous = current;
-                width >>= 1;
-                mip++;
+                groupX = Mathf.CeilToInt(dstWidth / (float)threadX);
+                groupY = Mathf.CeilToInt(dstHeight / (float)threadY);
+                cmd.DispatchCompute(hizMapCompute, ReduceKernel, groupX, groupY, 1);
+
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+                cmd.ReleaseTemporaryRT(pingTex);
+                cmd.SetComputeTextureParam(hizMapCompute, ReduceKernel, InTexId, new RenderTargetIdentifier(pongTex));
+                int temp = pingTex;
+                pingTex = pongTex;
+                pongTex = temp;
+#endif
             }
 
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+            cmd.ReleaseTemporaryRT(pingTex);
+#endif
+
+            Camera camera = renderingData.cameraData.camera;
+            Matrix4x4 matrixVP = GL.GetGPUProjectionMatrix(camera.projectionMatrix, false) * camera.worldToCameraMatrix;
             context.ExecuteCommandBuffer(cmd);
             CommandBufferPool.Release(cmd);
-
-            for (int i = 0; i < temporaries.Count; i++)
-            {
-                RenderTexture.ReleaseTemporary(temporaries[i]);
-            }
+            generator.MarkHiZUpdated(camera, matrixVP);
         }
 
         public void Dispose()
         {
-            CoreUtils.Destroy(depthCopyMaterial);
-            CoreUtils.Destroy(mipmapMaterial);
-            CoreUtils.Destroy(terrainDepthMaterial);
         }
 
-        private int DrawGpuTerrainDepth(CommandBuffer cmd)
+        private void ConfigureKeywords()
         {
-            if (terrainDepthMaterial == null)
+            if (hizMapCompute == null)
             {
-                return 0;
+                return;
             }
 
-            int drawCount = 0;
-            int shaderPass = SystemInfo.usesReversedZBuffer ? 0 : 1;
-            for (int i = 0; i < GPUTerrain.ActiveTerrainCount; i++)
+            if (SystemInfo.usesReversedZBuffer)
             {
-                GPUTerrain terrain = GPUTerrain.GetActiveTerrain(i);
-                if (terrain != null && terrain.DrawHiZDepth(cmd, terrainDepthMaterial, shaderPass))
-                {
-                    drawCount++;
-                }
+                hizMapCompute.EnableKeyword("_REVERSE_Z");
+            }
+            else
+            {
+                hizMapCompute.DisableKeyword("_REVERSE_Z");
             }
 
-            return drawCount;
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+            hizMapCompute.EnableKeyword("_PING_PONG_COPY");
+#else
+            hizMapCompute.DisableKeyword("_PING_PONG_COPY");
+#endif
         }
+
+        private static void GetTempHizMapTexture(CommandBuffer cmd, int nameId, int size, RenderTextureFormat format)
+        {
+            RenderTextureDescriptor desc = new RenderTextureDescriptor(size, size, format, 0, 1)
+            {
+                autoGenerateMips = false,
+                useMipMap = false,
+                enableRandomWrite = true
+            };
+            cmd.GetTemporaryRT(nameId, desc, FilterMode.Point);
+        }
+
     }
 }
