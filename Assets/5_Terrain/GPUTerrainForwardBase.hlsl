@@ -54,8 +54,10 @@ SAMPLER(sampler_TerrainNormalmapTextureArray);
 
 float4 _TerrainParams[64];
 float4 _TerrainOriginSizes[64];
+float4 _TerrainLodDebugColors[16];
 float4 _BaseColor;
 int _TerrainCount;
+int _TerrainLodDebugColorCount;
 float _TerrainDebugColorMode;
 
 #if GPUTERRAIN_APPLY_SHADOW_BIAS
@@ -77,6 +79,13 @@ float2 GetTerrainUV(float2 positionWSXZ, uint terrainIndex)
 {
     float4 terrainOriginSize = _TerrainOriginSizes[terrainIndex];
     return saturate((positionWSXZ - terrainOriginSize.xy) / max(terrainOriginSize.zw, 1e-5f));
+}
+
+half4 GetTerrainLodDebugColor(int mipmap)
+{
+    int colorCount = clamp(_TerrainLodDebugColorCount, 1, 16);
+    int colorIndex = clamp(mipmap, 0, colorCount - 1);
+    return half4(_TerrainLodDebugColors[colorIndex]);
 }
 
 #if GPUTERRAIN_APPLY_SHADOW_BIAS
@@ -138,7 +147,7 @@ Varyings TerrainVertexCommon(Attributes input, uint instanceID)
     output.clipPos.z = max(output.clipPos.z, UNITY_NEAR_CLIP_VALUE);
 #endif
 #endif
-    output.color = lerp(half4(1.0, 0.0, 0.0, 1.0), half4(0.0, 0.0, 1.0, 1.0), (float)infoData.mipmap / 3);
+    output.color = GetTerrainLodDebugColor(infoData.mipmap);
     return output;
 }
 

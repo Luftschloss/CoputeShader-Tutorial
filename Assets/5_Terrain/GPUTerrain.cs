@@ -4,6 +4,7 @@ using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Profiling;
 using UnityEngine.Rendering;
+using UnityEngine.Serialization;
 
 public class GPUTerrain : MonoBehaviour
 {
@@ -11,7 +12,10 @@ public class GPUTerrain : MonoBehaviour
     private const int HiZStatsCount = 6;
     private const int IndirectArgsCount = 5;
     private const int NodeInfoStride = 40;
+    private const int MaxTerrainLodDebugColorCount = 16;
     private static readonly int TerrainDebugColorModeId = Shader.PropertyToID("_TerrainDebugColorMode");
+    private static readonly int TerrainLodDebugColorsId = Shader.PropertyToID("_TerrainLodDebugColors");
+    private static readonly int TerrainLodDebugColorCountId = Shader.PropertyToID("_TerrainLodDebugColorCount");
     private static readonly int TerrainHeightmapTextureArrayId = Shader.PropertyToID("_TerrainHeightmapTextureArray");
     private static readonly int TerrainNormalmapTextureArrayId = Shader.PropertyToID("_TerrainNormalmapTextureArray");
     private static readonly int TerrainParamsId = Shader.PropertyToID("_TerrainParams");
@@ -32,7 +36,16 @@ public class GPUTerrain : MonoBehaviour
     [SerializeField] private Mesh instanceMesh;
 
     [Header("LOD")]
-    [SerializeField] private float[] lodDistance = { 100.0f, 200.0f, 500.0f, 1000.0f };
+    [SerializeField] private TerrainLodConfig[] lodConfigs =
+    {
+        new TerrainLodConfig(100.0f, new Color(1.0f, 0.0f, 0.0f, 1.0f)),
+        new TerrainLodConfig(200.0f, new Color(0.75f, 0.0f, 0.25f, 1.0f)),
+        new TerrainLodConfig(500.0f, new Color(0.5f, 0.0f, 0.5f, 1.0f)),
+        new TerrainLodConfig(1000.0f, new Color(0.25f, 0.0f, 0.75f, 1.0f)),
+        new TerrainLodConfig(0.0f, new Color(0.0f, 0.0f, 1.0f, 1.0f))
+    };
+    [SerializeField, HideInInspector, FormerlySerializedAs("lodDistance")] private float[] legacyLodDistance;
+    [SerializeField, HideInInspector, FormerlySerializedAs("lodDebugColors")] private Color[] legacyLodDebugColors;
     [SerializeField, Range(0.0f, 5.0f)] private float lodRebuildDistanceThreshold = 0.5f;
 
     [Header("Hi-Z Terrain Culling")]
@@ -54,6 +67,7 @@ public class GPUTerrain : MonoBehaviour
 
     private readonly Vector4[] terrainParams = new Vector4[GpuTerrainBakedData.MaxTerrainCount];
     private readonly Vector4[] terrainOriginSizes = new Vector4[GpuTerrainBakedData.MaxTerrainCount];
+    private readonly Vector4[] terrainLodDebugColors = new Vector4[MaxTerrainLodDebugColorCount];
     private readonly uint[] args = new uint[IndirectArgsCount] { 0, 0, 0, 0, 0 };
     private readonly uint[] hizStats = new uint[HiZStatsCount];
 
@@ -103,6 +117,7 @@ public class GPUTerrain : MonoBehaviour
 
     private void OnEnable()
     {
+        EnsureLodConfigDefaults();
         if (!ActiveTerrains.Contains(this))
         {
             ActiveTerrains.Add(this);
@@ -116,6 +131,7 @@ public class GPUTerrain : MonoBehaviour
 
     private void OnValidate()
     {
+        EnsureLodConfigDefaults();
         terrainResourcesDirty = true;
         forceLodRebuild = true;
         terrainGpuBindingsDirty = true;
@@ -300,6 +316,8 @@ public class GPUTerrain : MonoBehaviour
             terrainOriginSizes[i] = Vector4.zero;
         }
 
+        UpdateTerrainLodDebugColorArray();
+
         if (bakedData == null)
         {
             return;
@@ -311,6 +329,117 @@ public class GPUTerrain : MonoBehaviour
             terrainParams[i] = terrains[i].TerrainParams;
             terrainOriginSizes[i] = terrains[i].OriginSize;
         }
+    }
+
+    private void UpdateTerrainLodDebugColorArray()
+    {
+        int colorCount = GetTerrainLodDebugColorCount();
+        for (int i = 0; i < terrainLodDebugColors.Length; i++)
+        {
+            Color color = GetLodDebugColor(i, colorCount);
+            terrainLodDebugColors[i] = new Vector4(color.r, color.g, color.b, color.a);
+        }
+    }
+
+    private int GetTerrainLodDebugColorCount()
+    {
+        if (lodConfigs != null && lodConfigs.Length > 0)
+        {
+            return Mathf.Clamp(lodConfigs.Length, 1, MaxTerrainLodDebugColorCount);
+        }
+
+        int lodCount = bakedData != null && bakedData.IsValid ? bakedData.LodCount : 0;
+        return Mathf.Clamp(lodCount, 1, MaxTerrainLodDebugColorCount);
+    }
+
+    private Color GetLodDebugColor(int index, int colorCount)
+    {
+        if (lodConfigs != null && lodConfigs.Length > 0)
+        {
+            int sourceCount = Mathf.Min(lodConfigs.Length, MaxTerrainLodDebugColorCount);
+            TerrainLodConfig config = lodConfigs[Mathf.Clamp(index, 0, sourceCount - 1)];
+            return config != null ? config.debugColor : GetDefaultLodDebugColor(index, colorCount);
+        }
+
+        float t = colorCount <= 1 ? 0.0f : Mathf.Clamp01((float)index / (colorCount - 1));
+        return Color.Lerp(Color.red, Color.blue, t);
+    }
+
+    private float GetLodDistance(int mip)
+    {
+        if (lodConfigs == null || mip < 0 || mip >= lodConfigs.Length)
+        {
+            return 0.0f;
+        }
+
+        TerrainLodConfig config = lodConfigs[mip];
+        return config != null ? Mathf.Max(0.0f, config.distance) : 0.0f;
+    }
+
+    private void EnsureLodConfigDefaults()
+    {
+        MigrateLegacyLodConfig();
+
+        if (lodConfigs == null || lodConfigs.Length == 0)
+        {
+            lodConfigs = CreateDefaultLodConfigs();
+            return;
+        }
+
+        for (int i = 0; i < lodConfigs.Length; i++)
+        {
+            if (lodConfigs[i] == null)
+            {
+                lodConfigs[i] = new TerrainLodConfig(0.0f, GetDefaultLodDebugColor(i, lodConfigs.Length));
+            }
+
+            lodConfigs[i].distance = Mathf.Max(0.0f, lodConfigs[i].distance);
+        }
+    }
+
+    private void MigrateLegacyLodConfig()
+    {
+        bool hasLegacyDistance = legacyLodDistance != null && legacyLodDistance.Length > 0;
+        bool hasLegacyColors = legacyLodDebugColors != null && legacyLodDebugColors.Length > 0;
+        if (!hasLegacyDistance && !hasLegacyColors)
+        {
+            return;
+        }
+
+        int count = Mathf.Clamp(Mathf.Max(
+            hasLegacyDistance ? legacyLodDistance.Length : 0,
+            hasLegacyColors ? legacyLodDebugColors.Length : 0), 1, MaxTerrainLodDebugColorCount);
+        TerrainLodConfig[] migratedConfigs = new TerrainLodConfig[count];
+        for (int i = 0; i < count; i++)
+        {
+            float distance = hasLegacyDistance && i < legacyLodDistance.Length ? legacyLodDistance[i] : 0.0f;
+            Color debugColor = hasLegacyColors && i < legacyLodDebugColors.Length
+                ? legacyLodDebugColors[i]
+                : GetDefaultLodDebugColor(i, count);
+            migratedConfigs[i] = new TerrainLodConfig(distance, debugColor);
+        }
+
+        lodConfigs = migratedConfigs;
+        legacyLodDistance = null;
+        legacyLodDebugColors = null;
+    }
+
+    private static TerrainLodConfig[] CreateDefaultLodConfigs()
+    {
+        return new[]
+        {
+            new TerrainLodConfig(100.0f, GetDefaultLodDebugColor(0, 5)),
+            new TerrainLodConfig(200.0f, GetDefaultLodDebugColor(1, 5)),
+            new TerrainLodConfig(500.0f, GetDefaultLodDebugColor(2, 5)),
+            new TerrainLodConfig(1000.0f, GetDefaultLodDebugColor(3, 5)),
+            new TerrainLodConfig(0.0f, GetDefaultLodDebugColor(4, 5))
+        };
+    }
+
+    private static Color GetDefaultLodDebugColor(int index, int count)
+    {
+        float t = count <= 1 ? 0.0f : Mathf.Clamp01((float)index / (count - 1));
+        return Color.Lerp(Color.red, Color.blue, t);
     }
 
     private bool ShouldRebuildVisibleTerrainNodes()
@@ -408,7 +537,7 @@ public class GPUTerrain : MonoBehaviour
         }
 
         GpuTerrainBakedData.BakedNode node = nodes[nodeIndex];
-        float lodDistanceValue = lodDistance != null && node.mip >= 0 && node.mip < lodDistance.Length ? lodDistance[node.mip] : 0.0f;
+        float lodDistanceValue = GetLodDistance(node.mip);
         float centerX = node.rect.x + node.rect.z * 0.5f;
         float centerZ = node.rect.y + node.rect.w * 0.5f;
         float dx = cameraXZ.x - centerX;
@@ -854,6 +983,8 @@ public class GPUTerrain : MonoBehaviour
         Shader.SetGlobalVectorArray(TerrainParamsId, terrainParams);
         Shader.SetGlobalVectorArray(TerrainOriginSizesId, terrainOriginSizes);
         Shader.SetGlobalInt(TerrainCountId, bakedData.TerrainCount);
+        Shader.SetGlobalVectorArray(TerrainLodDebugColorsId, terrainLodDebugColors);
+        Shader.SetGlobalInt(TerrainLodDebugColorCountId, GetTerrainLodDebugColorCount());
 
         if (mat != null)
         {
@@ -873,6 +1004,8 @@ public class GPUTerrain : MonoBehaviour
         targetMaterial.SetVectorArray(TerrainParamsId, terrainParams);
         targetMaterial.SetVectorArray(TerrainOriginSizesId, terrainOriginSizes);
         targetMaterial.SetInt(TerrainCountId, bakedData.TerrainCount);
+        targetMaterial.SetVectorArray(TerrainLodDebugColorsId, terrainLodDebugColors);
+        targetMaterial.SetInt(TerrainLodDebugColorCountId, GetTerrainLodDebugColorCount());
     }
 
     private void BindTerrainRenderProperties(MaterialPropertyBlock propertyBlock)
@@ -887,6 +1020,8 @@ public class GPUTerrain : MonoBehaviour
         propertyBlock.SetVectorArray(TerrainParamsId, terrainParams);
         propertyBlock.SetVectorArray(TerrainOriginSizesId, terrainOriginSizes);
         propertyBlock.SetInt(TerrainCountId, bakedData.TerrainCount);
+        propertyBlock.SetVectorArray(TerrainLodDebugColorsId, terrainLodDebugColors);
+        propertyBlock.SetInt(TerrainLodDebugColorCountId, GetTerrainLodDebugColorCount());
     }
 
     public bool DrawHiZDepth(CommandBuffer cmd, Material depthMaterial, int shaderPass)
@@ -1200,6 +1335,19 @@ public class GPUTerrain : MonoBehaviour
         return deviceType == GraphicsDeviceType.OpenGLCore ||
                deviceType == GraphicsDeviceType.OpenGLES2 ||
                deviceType == GraphicsDeviceType.OpenGLES3;
+    }
+
+    [Serializable]
+    private sealed class TerrainLodConfig
+    {
+        public float distance;
+        public Color debugColor;
+
+        public TerrainLodConfig(float distance, Color debugColor)
+        {
+            this.distance = distance;
+            this.debugColor = debugColor;
+        }
     }
 
     private sealed class TerrainLeafLookup

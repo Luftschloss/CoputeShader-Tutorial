@@ -35,6 +35,7 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
 
     public override void SetupRenderPasses(ScriptableRenderer renderer, in RenderingData renderingData)
     {
+        pass?.SetDepthSource(renderer.cameraDepthTargetHandle);
     }
 
     public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
@@ -92,6 +93,7 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
         private const int ReduceKernel = 1;
         private readonly ComputeShader hizMapCompute;
         private DepthTextureGenerator generator;
+        private RTHandle cameraDepthSource;
 
         private static readonly int InTexId = Shader.PropertyToID("InTex");
         private static readonly int MipTexId = Shader.PropertyToID("MipTex");
@@ -102,7 +104,6 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
         private static readonly int InputTexSizeId = Shader.PropertyToID("_InputTexSize");
         private static readonly int DstTexSizeId = Shader.PropertyToID("_DstTexSize");
         private static readonly int MipId = Shader.PropertyToID("_Mip");
-        private static readonly RenderTargetIdentifier CameraDepthTexture = new RenderTargetIdentifier("_CameraDepthTexture");
 
         public bool IsValid => hizMapCompute != null;
 
@@ -116,6 +117,11 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
         public void Setup(DepthTextureGenerator targetGenerator)
         {
             generator = targetGenerator;
+        }
+
+        public void SetDepthSource(RTHandle source)
+        {
+            cameraDepthSource = source;
         }
 
         public void ClearSetup()
@@ -132,6 +138,11 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
                 return;
             }
 
+            if (cameraDepthSource == null)
+            {
+                return;
+            }
+
             CommandBuffer cmd = CommandBufferPool.Get("GPU Driven Hi-Z Pyramid");
             int dstWidth = depthTexture.width;
             int dstHeight = depthTexture.height;
@@ -140,7 +151,7 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
             uint threadZ;
             hizMapCompute.GetKernelThreadGroupSizes(BlitKernel, out threadX, out threadY, out threadZ);
 
-            cmd.SetComputeTextureParam(hizMapCompute, BlitKernel, InTexId, CameraDepthTexture);
+            cmd.SetComputeTextureParam(hizMapCompute, BlitKernel, InTexId, cameraDepthSource);
             cmd.SetComputeTextureParam(hizMapCompute, BlitKernel, MipTexId, depthTexture, 0);
             cmd.SetComputeVectorParam(hizMapCompute, SrcTexSizeId, new Vector4(
                 renderingData.cameraData.camera.pixelWidth,
