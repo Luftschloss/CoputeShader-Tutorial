@@ -2,6 +2,12 @@
 
 Unity GPU Driven rendering showcase. The current focus is `GPUDrivenTerrain`: Unity Terrain is still used for authoring, while runtime rendering is handled by baked terrain data, compute culling, Hi-Z occlusion, and indirect patch drawing.
 
+## Showcase
+
+GPUDriven terrain runtime demo:
+
+![GPUDriven Terrain Showcase](Doc/showcase.gif)
+
 ## Environment
 
 - Unity `2022.3.62f3`
