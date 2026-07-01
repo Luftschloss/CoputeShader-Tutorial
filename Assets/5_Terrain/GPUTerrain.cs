@@ -14,13 +14,23 @@ public class GPUTerrain : MonoBehaviour
     private const int NodeInfoStride = 40;
     private const int MaxTerrainLodDebugColorCount = 16;
     private static readonly int TerrainDebugColorModeId = Shader.PropertyToID("_TerrainDebugColorMode");
+    private static readonly int TerrainMaterialDebugModeId = Shader.PropertyToID("_TerrainMaterialDebugMode");
     private static readonly int TerrainLodDebugColorsId = Shader.PropertyToID("_TerrainLodDebugColors");
     private static readonly int TerrainLodDebugColorCountId = Shader.PropertyToID("_TerrainLodDebugColorCount");
     private static readonly int TerrainHeightmapTextureArrayId = Shader.PropertyToID("_TerrainHeightmapTextureArray");
     private static readonly int TerrainNormalmapTextureArrayId = Shader.PropertyToID("_TerrainNormalmapTextureArray");
+    private static readonly int TerrainControlTextureArrayId = Shader.PropertyToID("_TerrainControlTextureArray");
+    private static readonly int TerrainLayerDiffuseArrayId = Shader.PropertyToID("_TerrainLayerDiffuseArray");
+    private static readonly int TerrainLayerNormalArrayId = Shader.PropertyToID("_TerrainLayerNormalArray");
+    private static readonly int TerrainLayerMaskArrayId = Shader.PropertyToID("_TerrainLayerMaskArray");
     private static readonly int TerrainParamsId = Shader.PropertyToID("_TerrainParams");
     private static readonly int TerrainOriginSizesId = Shader.PropertyToID("_TerrainOriginSizes");
+    private static readonly int TerrainLayerIndicesId = Shader.PropertyToID("_TerrainLayerIndices");
+    private static readonly int TerrainLayerTileSizeOffsetsId = Shader.PropertyToID("_TerrainLayerTileSizeOffsets");
+    private static readonly int TerrainLayerPbrParamsId = Shader.PropertyToID("_TerrainLayerPbrParams");
     private static readonly int TerrainCountId = Shader.PropertyToID("_TerrainCount");
+    private static readonly int TerrainLayerCountId = Shader.PropertyToID("_TerrainLayerCount");
+    private static readonly int TerrainHasLayerDataId = Shader.PropertyToID("_TerrainHasLayerData");
     private static readonly int HizDepthBiasId = Shader.PropertyToID("_HizDepthBias");
     private static readonly int HizCameraPositionWSId = Shader.PropertyToID("_HizCameraPositionWS");
     private static readonly int HizCameraMatrixVPId = Shader.PropertyToID("_HizCameraMatrixVP");
@@ -64,19 +74,26 @@ public class GPUTerrain : MonoBehaviour
     [SerializeField] private Material mat;
 
     [Header("Debug")]
-    [SerializeField] private bool terrainColorDebug = false;
+    [SerializeField] private TerrainMaterialDebugMode materialDebugMode = TerrainMaterialDebugMode.Lit;
 
     public DepthTextureGenerator depthTextureGenerator;
     public bool DebugGizmos;
 
     private readonly Vector4[] terrainParams = new Vector4[GpuTerrainBakedData.MaxTerrainCount];
     private readonly Vector4[] terrainOriginSizes = new Vector4[GpuTerrainBakedData.MaxTerrainCount];
+    private readonly Vector4[] terrainLayerIndices = new Vector4[GpuTerrainBakedData.MaxTerrainCount];
+    private readonly Vector4[] terrainLayerTileSizeOffsets = new Vector4[GpuTerrainBakedData.MaxTerrainLayerCount];
+    private readonly Vector4[] terrainLayerPbrParams = new Vector4[GpuTerrainBakedData.MaxTerrainLayerCount];
     private readonly Vector4[] terrainLodDebugColors = new Vector4[MaxTerrainLodDebugColorCount];
     private readonly uint[] args = new uint[IndirectArgsCount] { 0, 0, 0, 0, 0 };
     private readonly uint[] hizStats = new uint[HiZStatsCount];
 
     private Texture2DArray heightMapArray;
     private Texture2DArray normalMapArray;
+    private Texture2DArray controlMapArray;
+    private Texture2DArray layerDiffuseArray;
+    private Texture2DArray layerNormalArray;
+    private Texture2DArray layerMaskArray;
     private Bounds nodeBounds = new Bounds(Vector3.zero, new Vector3(1000.0f, 1000.0f, 1000.0f));
     private ComputeBuffer allInstancePosBuffer;
     private ComputeBuffer visibleInstancePosIDBuffer;
@@ -99,6 +116,8 @@ public class GPUTerrain : MonoBehaviour
     private int cullTerrainKernel = -1;
     private Camera camera;
     private GpuDrivenShowcaseCullingMode showcaseCullingMode = GpuDrivenShowcaseCullingMode.FrustumAndHiZ;
+    private bool showcaseDebugColorMode;
+    private TerrainMaterialDebugMode materialDebugModeBeforeShowcaseColor = TerrainMaterialDebugMode.Lit;
     private bool lastHizActive;
     private bool forceLodRebuild = true;
     private bool terrainResourcesDirty;
@@ -285,6 +304,10 @@ public class GPUTerrain : MonoBehaviour
     {
         heightMapArray = bakedData.HeightMapArray;
         normalMapArray = bakedData.NormalMapArray;
+        controlMapArray = bakedData.ControlMapArray;
+        layerDiffuseArray = bakedData.LayerDiffuseArray;
+        layerNormalArray = bakedData.LayerNormalArray;
+        layerMaskArray = bakedData.LayerMaskArray;
     }
 
     private void UpdateNodeBounds()
@@ -317,6 +340,13 @@ public class GPUTerrain : MonoBehaviour
         {
             terrainParams[i] = Vector4.zero;
             terrainOriginSizes[i] = Vector4.zero;
+            terrainLayerIndices[i] = Vector4.zero;
+        }
+
+        for (int i = 0; i < terrainLayerTileSizeOffsets.Length; i++)
+        {
+            terrainLayerTileSizeOffsets[i] = new Vector4(1.0f, 1.0f, 0.0f, 0.0f);
+            terrainLayerPbrParams[i] = new Vector4(1.0f, 0.0f, 0.5f, 0.0f);
         }
 
         UpdateTerrainLodDebugColorArray();
@@ -331,6 +361,24 @@ public class GPUTerrain : MonoBehaviour
         {
             terrainParams[i] = terrains[i].TerrainParams;
             terrainOriginSizes[i] = terrains[i].OriginSize;
+        }
+
+        Vector4[] bakedTerrainLayerIndices = bakedData.TerrainLayerIndices;
+        for (int i = 0; i < bakedTerrainLayerIndices.Length && i < terrainLayerIndices.Length; i++)
+        {
+            terrainLayerIndices[i] = bakedTerrainLayerIndices[i];
+        }
+
+        Vector4[] bakedLayerTileSizeOffsets = bakedData.LayerTileSizeOffsets;
+        for (int i = 0; i < bakedLayerTileSizeOffsets.Length && i < terrainLayerTileSizeOffsets.Length; i++)
+        {
+            terrainLayerTileSizeOffsets[i] = bakedLayerTileSizeOffsets[i];
+        }
+
+        Vector4[] bakedLayerPbrParams = bakedData.LayerPbrParams;
+        for (int i = 0; i < bakedLayerPbrParams.Length && i < terrainLayerPbrParams.Length; i++)
+        {
+            terrainLayerPbrParams[i] = bakedLayerPbrParams[i];
         }
     }
 
@@ -984,11 +1032,21 @@ public class GPUTerrain : MonoBehaviour
         UpdateTerrainShaderArrays();
         Shader.SetGlobalTexture(TerrainHeightmapTextureArrayId, heightMapArray);
         Shader.SetGlobalTexture(TerrainNormalmapTextureArrayId, normalMapArray);
+        SetGlobalTextureIfNotNull(TerrainControlTextureArrayId, controlMapArray);
+        SetGlobalTextureIfNotNull(TerrainLayerDiffuseArrayId, layerDiffuseArray);
+        SetGlobalTextureIfNotNull(TerrainLayerNormalArrayId, layerNormalArray);
+        SetGlobalTextureIfNotNull(TerrainLayerMaskArrayId, layerMaskArray);
         Shader.SetGlobalVectorArray(TerrainParamsId, terrainParams);
         Shader.SetGlobalVectorArray(TerrainOriginSizesId, terrainOriginSizes);
+        Shader.SetGlobalVectorArray(TerrainLayerIndicesId, terrainLayerIndices);
+        Shader.SetGlobalVectorArray(TerrainLayerTileSizeOffsetsId, terrainLayerTileSizeOffsets);
+        Shader.SetGlobalVectorArray(TerrainLayerPbrParamsId, terrainLayerPbrParams);
         Shader.SetGlobalInt(TerrainCountId, bakedData.TerrainCount);
+        Shader.SetGlobalInt(TerrainLayerCountId, bakedData.LayerCount);
+        Shader.SetGlobalFloat(TerrainHasLayerDataId, bakedData.HasLayerData ? 1.0f : 0.0f);
         Shader.SetGlobalVectorArray(TerrainLodDebugColorsId, terrainLodDebugColors);
         Shader.SetGlobalInt(TerrainLodDebugColorCountId, GetTerrainLodDebugColorCount());
+        Shader.SetGlobalInt(TerrainMaterialDebugModeId, (int)materialDebugMode);
 
         if (mat != null)
         {
@@ -1005,11 +1063,21 @@ public class GPUTerrain : MonoBehaviour
 
         targetMaterial.SetTexture(TerrainHeightmapTextureArrayId, heightMapArray);
         targetMaterial.SetTexture(TerrainNormalmapTextureArrayId, normalMapArray);
+        SetMaterialTextureIfNotNull(targetMaterial, TerrainControlTextureArrayId, controlMapArray);
+        SetMaterialTextureIfNotNull(targetMaterial, TerrainLayerDiffuseArrayId, layerDiffuseArray);
+        SetMaterialTextureIfNotNull(targetMaterial, TerrainLayerNormalArrayId, layerNormalArray);
+        SetMaterialTextureIfNotNull(targetMaterial, TerrainLayerMaskArrayId, layerMaskArray);
         targetMaterial.SetVectorArray(TerrainParamsId, terrainParams);
         targetMaterial.SetVectorArray(TerrainOriginSizesId, terrainOriginSizes);
+        targetMaterial.SetVectorArray(TerrainLayerIndicesId, terrainLayerIndices);
+        targetMaterial.SetVectorArray(TerrainLayerTileSizeOffsetsId, terrainLayerTileSizeOffsets);
+        targetMaterial.SetVectorArray(TerrainLayerPbrParamsId, terrainLayerPbrParams);
         targetMaterial.SetInt(TerrainCountId, bakedData.TerrainCount);
+        targetMaterial.SetInt(TerrainLayerCountId, bakedData.LayerCount);
+        targetMaterial.SetFloat(TerrainHasLayerDataId, bakedData.HasLayerData ? 1.0f : 0.0f);
         targetMaterial.SetVectorArray(TerrainLodDebugColorsId, terrainLodDebugColors);
         targetMaterial.SetInt(TerrainLodDebugColorCountId, GetTerrainLodDebugColorCount());
+        targetMaterial.SetInt(TerrainMaterialDebugModeId, (int)materialDebugMode);
     }
 
     private void BindTerrainRenderProperties(MaterialPropertyBlock propertyBlock)
@@ -1021,11 +1089,45 @@ public class GPUTerrain : MonoBehaviour
 
         propertyBlock.SetTexture(TerrainHeightmapTextureArrayId, heightMapArray);
         propertyBlock.SetTexture(TerrainNormalmapTextureArrayId, normalMapArray);
+        SetPropertyBlockTextureIfNotNull(propertyBlock, TerrainControlTextureArrayId, controlMapArray);
+        SetPropertyBlockTextureIfNotNull(propertyBlock, TerrainLayerDiffuseArrayId, layerDiffuseArray);
+        SetPropertyBlockTextureIfNotNull(propertyBlock, TerrainLayerNormalArrayId, layerNormalArray);
+        SetPropertyBlockTextureIfNotNull(propertyBlock, TerrainLayerMaskArrayId, layerMaskArray);
         propertyBlock.SetVectorArray(TerrainParamsId, terrainParams);
         propertyBlock.SetVectorArray(TerrainOriginSizesId, terrainOriginSizes);
+        propertyBlock.SetVectorArray(TerrainLayerIndicesId, terrainLayerIndices);
+        propertyBlock.SetVectorArray(TerrainLayerTileSizeOffsetsId, terrainLayerTileSizeOffsets);
+        propertyBlock.SetVectorArray(TerrainLayerPbrParamsId, terrainLayerPbrParams);
         propertyBlock.SetInt(TerrainCountId, bakedData.TerrainCount);
+        propertyBlock.SetInt(TerrainLayerCountId, bakedData.LayerCount);
+        propertyBlock.SetFloat(TerrainHasLayerDataId, bakedData.HasLayerData ? 1.0f : 0.0f);
         propertyBlock.SetVectorArray(TerrainLodDebugColorsId, terrainLodDebugColors);
         propertyBlock.SetInt(TerrainLodDebugColorCountId, GetTerrainLodDebugColorCount());
+        propertyBlock.SetInt(TerrainMaterialDebugModeId, (int)materialDebugMode);
+    }
+
+    private static void SetGlobalTextureIfNotNull(int propertyId, Texture texture)
+    {
+        if (texture != null)
+        {
+            Shader.SetGlobalTexture(propertyId, texture);
+        }
+    }
+
+    private static void SetMaterialTextureIfNotNull(Material targetMaterial, int propertyId, Texture texture)
+    {
+        if (texture != null)
+        {
+            targetMaterial.SetTexture(propertyId, texture);
+        }
+    }
+
+    private static void SetPropertyBlockTextureIfNotNull(MaterialPropertyBlock propertyBlock, int propertyId, Texture texture)
+    {
+        if (texture != null)
+        {
+            propertyBlock.SetTexture(propertyId, texture);
+        }
     }
 
     public bool DrawHiZDepth(CommandBuffer cmd, Material depthMaterial, int shaderPass)
@@ -1173,6 +1275,32 @@ public class GPUTerrain : MonoBehaviour
         terrainGpuBindingsDirty = true;
     }
 
+    public void SetShowcaseDebugColorMode(bool enabled)
+    {
+        if (showcaseDebugColorMode == enabled)
+        {
+            return;
+        }
+
+        showcaseDebugColorMode = enabled;
+        if (enabled)
+        {
+            if (materialDebugMode != TerrainMaterialDebugMode.LodColor)
+            {
+                materialDebugModeBeforeShowcaseColor = materialDebugMode;
+            }
+
+            materialDebugMode = TerrainMaterialDebugMode.LodColor;
+        }
+        else if (materialDebugMode == TerrainMaterialDebugMode.LodColor)
+        {
+            materialDebugMode = materialDebugModeBeforeShowcaseColor;
+        }
+
+        terrainGpuBindingsDirty = true;
+        ApplyMaterialState(showcaseCullingMode != GpuDrivenShowcaseCullingMode.None);
+    }
+
     public void CollectShowcaseStats(ref GpuDrivenShowcaseStats stats)
     {
         stats.terrainPatchCount += activeNodeCount;
@@ -1212,7 +1340,8 @@ public class GPUTerrain : MonoBehaviour
             mat.SetBuffer("_VisibleInstanceIDBuffer", idBuffer);
         }
 
-        mat.SetFloat(TerrainDebugColorModeId, terrainColorDebug ? 1.0f : 0.0f);
+        mat.SetFloat(TerrainDebugColorModeId, materialDebugMode == TerrainMaterialDebugMode.LodColor ? 1.0f : 0.0f);
+        mat.SetInt(TerrainMaterialDebugModeId, (int)materialDebugMode);
         if (receiveShadowMap)
         {
             mat.DisableKeyword("_RECEIVE_SHADOWS_OFF");
@@ -1290,6 +1419,10 @@ public class GPUTerrain : MonoBehaviour
     {
         heightMapArray = null;
         normalMapArray = null;
+        controlMapArray = null;
+        layerDiffuseArray = null;
+        layerNormalArray = null;
+        layerMaskArray = null;
     }
 
     private void ReleaseUploadArrays()
@@ -1334,6 +1467,19 @@ public class GPUTerrain : MonoBehaviour
             this.distance = distance;
             this.debugColor = debugColor;
         }
+    }
+
+    private enum TerrainMaterialDebugMode
+    {
+        Lit = 0,
+        LodColor = 1,
+        LayerBlend = 2,
+        ControlWeights = 3,
+        Layer0 = 4,
+        Layer1 = 5,
+        Layer2 = 6,
+        Layer3 = 7,
+        HasLayerData = 8
     }
 
     private sealed class TerrainLeafLookup

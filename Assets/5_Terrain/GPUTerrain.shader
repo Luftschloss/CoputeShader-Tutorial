@@ -8,6 +8,7 @@ Shader "GPU Driven/GPUTerrain"
         [MainTexture] _BaseMap("Albedo", 2D) = "white" {}
         [MainColor] _BaseColor("Color", Color) = (1,1,1,1)
         [Toggle] _TerrainDebugColorMode("Terrain LOD Color Debug", Float) = 0.0
+        [Enum(Lit,0,LOD Color,1,Layer Blend,2,Control Weights,3,Layer 0,4,Layer 1,5,Layer 2,6,Layer 3,7,Has Layer Data,8)] _TerrainMaterialDebugMode("Terrain Material Debug", Float) = 0.0
 
         _Cutoff("Alpha Cutoff", Range(0.0, 1.0)) = 0.5
 

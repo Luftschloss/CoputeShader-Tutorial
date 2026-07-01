@@ -14,8 +14,17 @@ public sealed class GpuTerrainBakedDataEditor : EditorWindow
     private const string SourceModeKey = "GpuDrivenTerrainBake.SourceMode";
     private const string HeightMapArrayName = "GPU Terrain Height Map Array";
     private const string NormalMapArrayName = "GPU Terrain Normal Map Array";
+    private const string ControlMapArrayName = "GPU Terrain Control Map Array";
+    private const string LayerDiffuseArrayName = "GPU Terrain Layer Diffuse Array";
+    private const string LayerNormalArrayName = "GPU Terrain Layer Normal Array";
+    private const string LayerMaskArrayName = "GPU Terrain Layer Mask Array";
     private const TextureFormat HeightMapArrayFormat = TextureFormat.RHalf;
     private const TextureFormat NormalMapArrayFormat = TextureFormat.RGB24;
+    private const TextureFormat ControlMapArrayFormat = TextureFormat.RGBA32;
+    private const TextureFormat LayerDiffuseArrayFormat = TextureFormat.RGBA32;
+    private const TextureFormat LayerNormalArrayFormat = TextureFormat.RGBA32;
+    private const TextureFormat LayerMaskArrayFormat = TextureFormat.RGBA32;
+    private const int LayerTextureSize = 1024;
 
     private SourceMode sourceMode;
     private float patchSize = 64.0f;
@@ -149,6 +158,8 @@ public sealed class GpuTerrainBakedDataEditor : EditorWindow
             return null;
         }
 
+        ValidateTerrainResolutions(terrains);
+
         GpuTerrainBakedData.TerrainTileInfo[] terrainInfos = new GpuTerrainBakedData.TerrainTileInfo[terrains.Count];
         List<GpuTerrainBakedData.BakedNode> nodes = new List<GpuTerrainBakedData.BakedNode>();
         List<int> rootIndices = new List<int>();
@@ -187,6 +198,7 @@ public sealed class GpuTerrainBakedDataEditor : EditorWindow
 
         Texture2DArray heightArray = BuildHeightMapArray(terrains);
         Texture2DArray normalArray = BuildNormalMapArray(terrains, heightArray.width, heightArray.height);
+        BakedMaterialData materialData = BuildMaterialData(terrains);
 
         GpuTerrainBakedData bakedData = CreateInstance<GpuTerrainBakedData>();
         bakedData.SetData(
@@ -196,7 +208,14 @@ public sealed class GpuTerrainBakedDataEditor : EditorWindow
             nodes.ToArray(),
             rootIndices.ToArray(),
             heightArray,
-            normalArray);
+            normalArray,
+            materialData.controlMapArray,
+            materialData.layerDiffuseArray,
+            materialData.layerNormalArray,
+            materialData.layerMaskArray,
+            materialData.terrainLayerIndices,
+            materialData.layerTileSizeOffsets,
+            materialData.layerPbrParams);
         return bakedData;
     }
 
@@ -239,6 +258,11 @@ public sealed class GpuTerrainBakedDataEditor : EditorWindow
             {
                 AssignToSceneTerrains(savedAsset);
             }
+        }
+        catch (InvalidDataException exception)
+        {
+            EditorUtility.DisplayDialog("Bake GPU Terrain", exception.Message, "OK");
+            return null;
         }
         finally
         {
@@ -313,6 +337,26 @@ public sealed class GpuTerrainBakedDataEditor : EditorWindow
         return mode == SourceMode.SelectedTerrains
             ? Selection.GetFiltered<Terrain>(SelectionMode.Editable | SelectionMode.ExcludePrefab)
             : Object.FindObjectsOfType<Terrain>(true);
+    }
+
+    private static void ValidateTerrainResolutions(List<Terrain> terrains)
+    {
+        TerrainData first = terrains[0].terrainData;
+        int heightmapResolution = first.heightmapResolution;
+        int alphamapResolution = first.alphamapResolution;
+        for (int i = 1; i < terrains.Count; i++)
+        {
+            TerrainData terrainData = terrains[i].terrainData;
+            if (terrainData.heightmapResolution != heightmapResolution)
+            {
+                throw new InvalidDataException("All baked terrains must use the same heightmap resolution.");
+            }
+
+            if (terrainData.alphamapResolution != alphamapResolution)
+            {
+                throw new InvalidDataException("All baked terrains must use the same alphamap resolution for phase 1 control texture baking.");
+            }
+        }
     }
 
     private static int AddNodeRecursive(
@@ -479,6 +523,234 @@ public sealed class GpuTerrainBakedDataEditor : EditorWindow
         return textureArray;
     }
 
+    private static BakedMaterialData BuildMaterialData(List<Terrain> terrains)
+    {
+        List<TerrainLayer> layers = new List<TerrainLayer>();
+        for (int i = 0; i < terrains.Count; i++)
+        {
+            TerrainLayer[] terrainLayers = terrains[i].terrainData.terrainLayers;
+            if (terrainLayers == null)
+            {
+                continue;
+            }
+
+            for (int j = 0; j < terrainLayers.Length && j < 4; j++)
+            {
+                TerrainLayer layer = terrainLayers[j];
+                if (layer != null && !layers.Contains(layer))
+                {
+                    layers.Add(layer);
+                }
+            }
+        }
+
+        if (layers.Count == 0)
+        {
+            layers.Add(null);
+        }
+
+        int layerCount = Mathf.Min(layers.Count, GpuTerrainBakedData.MaxTerrainLayerCount);
+        Vector4[] terrainLayerIndices = BuildTerrainLayerIndices(terrains, layers, layerCount);
+        Vector4[] layerTileSizeOffsets = new Vector4[layerCount];
+        Vector4[] layerPbrParams = new Vector4[layerCount];
+
+        Texture2DArray layerDiffuseArray = CreateLayerTextureArray(LayerDiffuseArrayName, layerCount, LayerDiffuseArrayFormat, true, false);
+        Texture2DArray layerNormalArray = CreateLayerTextureArray(LayerNormalArrayName, layerCount, LayerNormalArrayFormat, true, true);
+        Texture2DArray layerMaskArray = CreateLayerTextureArray(LayerMaskArrayName, layerCount, LayerMaskArrayFormat, true, true);
+
+        for (int i = 0; i < layerCount; i++)
+        {
+            TerrainLayer layer = layers[i];
+            Texture2D diffuse = layer != null ? layer.diffuseTexture : null;
+            Texture2D normal = layer != null ? layer.normalMapTexture : null;
+            Texture2D mask = layer != null ? layer.maskMapTexture : null;
+
+            CopyTextureToArraySlice(diffuse, layerDiffuseArray, i, Color.white, false, true);
+            CopyTextureToArraySlice(normal, layerNormalArray, i, new Color(0.5f, 0.5f, 1.0f, 1.0f), true, false);
+            CopyTextureToArraySlice(mask, layerMaskArray, i, Color.white, false, false);
+
+            Vector2 tileSize = layer != null ? layer.tileSize : Vector2.one;
+            Vector2 tileOffset = layer != null ? layer.tileOffset : Vector2.zero;
+            layerTileSizeOffsets[i] = new Vector4(
+                Mathf.Max(0.0001f, tileSize.x),
+                Mathf.Max(0.0001f, tileSize.y),
+                tileOffset.x,
+                tileOffset.y);
+            layerPbrParams[i] = new Vector4(
+                layer != null ? layer.normalScale : 1.0f,
+                layer != null ? layer.metallic : 0.0f,
+                layer != null ? layer.smoothness : 0.5f,
+                0.0f);
+        }
+
+        layerDiffuseArray.Apply(true, false);
+        layerNormalArray.Apply(true, false);
+        layerMaskArray.Apply(true, false);
+
+        return new BakedMaterialData
+        {
+            controlMapArray = BuildControlMapArray(terrains),
+            layerDiffuseArray = layerDiffuseArray,
+            layerNormalArray = layerNormalArray,
+            layerMaskArray = layerMaskArray,
+            terrainLayerIndices = terrainLayerIndices,
+            layerTileSizeOffsets = layerTileSizeOffsets,
+            layerPbrParams = layerPbrParams
+        };
+    }
+
+    private static Vector4[] BuildTerrainLayerIndices(List<Terrain> terrains, List<TerrainLayer> globalLayers, int layerCount)
+    {
+        Vector4[] terrainLayerIndices = new Vector4[terrains.Count];
+        for (int terrainIndex = 0; terrainIndex < terrains.Count; terrainIndex++)
+        {
+            TerrainLayer[] localLayers = terrains[terrainIndex].terrainData.terrainLayers;
+            int x = GetGlobalLayerIndex(localLayers, globalLayers, layerCount, 0);
+            int y = GetGlobalLayerIndex(localLayers, globalLayers, layerCount, 1);
+            int z = GetGlobalLayerIndex(localLayers, globalLayers, layerCount, 2);
+            int w = GetGlobalLayerIndex(localLayers, globalLayers, layerCount, 3);
+            terrainLayerIndices[terrainIndex] = new Vector4(x, y, z, w);
+        }
+
+        return terrainLayerIndices;
+    }
+
+    private static int GetGlobalLayerIndex(TerrainLayer[] localLayers, List<TerrainLayer> globalLayers, int layerCount, int localIndex)
+    {
+        if (localLayers == null || localIndex >= localLayers.Length || localLayers[localIndex] == null)
+        {
+            return 0;
+        }
+
+        int index = globalLayers.IndexOf(localLayers[localIndex]);
+        if (index < 0)
+        {
+            return 0;
+        }
+
+        return Mathf.Clamp(index, 0, Mathf.Max(0, layerCount - 1));
+    }
+
+    private static Texture2DArray BuildControlMapArray(List<Terrain> terrains)
+    {
+        int resolution = Mathf.Max(1, terrains[0].terrainData.alphamapResolution);
+        Texture2DArray textureArray = new Texture2DArray(resolution, resolution, terrains.Count, ControlMapArrayFormat, false, true)
+        {
+            name = ControlMapArrayName,
+            wrapMode = TextureWrapMode.Clamp,
+            filterMode = FilterMode.Bilinear
+        };
+
+        for (int slice = 0; slice < terrains.Count; slice++)
+        {
+            TerrainData terrainData = terrains[slice].terrainData;
+            int width = terrainData.alphamapWidth;
+            int height = terrainData.alphamapHeight;
+            int layerCount = terrainData.alphamapLayers;
+            float[,,] alphamaps = terrainData.GetAlphamaps(0, 0, width, height);
+            Color[] colors = new Color[resolution * resolution];
+            int index = 0;
+            for (int y = 0; y < resolution; y++)
+            {
+                int sourceY = Mathf.Clamp(Mathf.RoundToInt((float)y / Mathf.Max(1, resolution - 1) * (height - 1)), 0, height - 1);
+                for (int x = 0; x < resolution; x++)
+                {
+                    int sourceX = Mathf.Clamp(Mathf.RoundToInt((float)x / Mathf.Max(1, resolution - 1) * (width - 1)), 0, width - 1);
+                    colors[index++] = new Color(
+                        layerCount > 0 ? alphamaps[sourceY, sourceX, 0] : 1.0f,
+                        layerCount > 1 ? alphamaps[sourceY, sourceX, 1] : 0.0f,
+                        layerCount > 2 ? alphamaps[sourceY, sourceX, 2] : 0.0f,
+                        layerCount > 3 ? alphamaps[sourceY, sourceX, 3] : 0.0f);
+                }
+            }
+
+            textureArray.SetPixels(colors, slice, 0);
+        }
+
+        textureArray.Apply(false, false);
+        return textureArray;
+    }
+
+    private static Texture2DArray CreateLayerTextureArray(string name, int layerCount, TextureFormat format, bool mipChain, bool linear)
+    {
+        return new Texture2DArray(LayerTextureSize, LayerTextureSize, Mathf.Max(1, layerCount), format, mipChain, linear)
+        {
+            name = name,
+            wrapMode = TextureWrapMode.Repeat,
+            filterMode = mipChain ? FilterMode.Trilinear : FilterMode.Bilinear,
+            anisoLevel = 4
+        };
+    }
+
+    private static void CopyTextureToArraySlice(Texture2D source, Texture2DArray target, int slice, Color fallback, bool normalMap, bool sRgb)
+    {
+        Color[] pixels = new Color[LayerTextureSize * LayerTextureSize];
+        if (source == null)
+        {
+            for (int i = 0; i < pixels.Length; i++)
+            {
+                pixels[i] = fallback;
+            }
+        }
+        else
+        {
+            pixels = ReadTexturePixels(source, normalMap, sRgb);
+        }
+
+        target.SetPixels(pixels, slice, 0);
+    }
+
+    private static Color[] ReadTexturePixels(Texture2D source, bool normalMap, bool sRgb)
+    {
+        RenderTexture previous = RenderTexture.active;
+        FilterMode previousFilterMode = source.filterMode;
+        float previousMipMapBias = source.mipMapBias;
+        int previousAnisoLevel = source.anisoLevel;
+        RenderTextureReadWrite readWrite = sRgb ? RenderTextureReadWrite.sRGB : RenderTextureReadWrite.Linear;
+        RenderTexture temporary = RenderTexture.GetTemporary(LayerTextureSize, LayerTextureSize, 0, RenderTextureFormat.ARGB32, readWrite);
+        Texture2D readable = new Texture2D(LayerTextureSize, LayerTextureSize, TextureFormat.RGBA32, false, !sRgb);
+        try
+        {
+            source.filterMode = FilterMode.Trilinear;
+            source.mipMapBias = 0.0f;
+            source.anisoLevel = 1;
+
+            Graphics.Blit(source, temporary);
+            RenderTexture.active = temporary;
+            readable.ReadPixels(new Rect(0, 0, LayerTextureSize, LayerTextureSize), 0, 0, false);
+            readable.Apply(false, false);
+            Color[] pixels = readable.GetPixels();
+            if (normalMap)
+            {
+                for (int i = 0; i < pixels.Length; i++)
+                {
+                    pixels[i] = NormalizeNormalMapColor(pixels[i]);
+                }
+            }
+
+            return pixels;
+        }
+        finally
+        {
+            source.filterMode = previousFilterMode;
+            source.mipMapBias = previousMipMapBias;
+            source.anisoLevel = previousAnisoLevel;
+            RenderTexture.active = previous;
+            RenderTexture.ReleaseTemporary(temporary);
+            DestroyImmediate(readable);
+        }
+    }
+
+    private static Color NormalizeNormalMapColor(Color color)
+    {
+        if (color.a > 0.0f && (color.r < 0.05f || color.b < 0.05f))
+        {
+            return new Color(color.a, color.g, 1.0f, 1.0f);
+        }
+
+        return color;
+    }
+
     private static byte Float01ToByte(float value)
     {
         return (byte)Mathf.Clamp(Mathf.RoundToInt(value * 255.0f), 0, 255);
@@ -495,12 +767,20 @@ public sealed class GpuTerrainBakedDataEditor : EditorWindow
 
         Texture2DArray heightArray = asset.HeightMapArray;
         Texture2DArray normalArray = asset.NormalMapArray;
+        Texture2DArray controlArray = asset.ControlMapArray;
+        Texture2DArray layerDiffuseArray = asset.LayerDiffuseArray;
+        Texture2DArray layerNormalArray = asset.LayerNormalArray;
+        Texture2DArray layerMaskArray = asset.LayerMaskArray;
         GpuTerrainBakedData existing = AssetDatabase.LoadAssetAtPath<GpuTerrainBakedData>(path);
         if (existing != null)
         {
             RemoveEmbeddedTextureArrays(path);
-            AssetDatabase.AddObjectToAsset(heightArray, existing);
-            AssetDatabase.AddObjectToAsset(normalArray, existing);
+            AddTextureArrayToAsset(heightArray, existing);
+            AddTextureArrayToAsset(normalArray, existing);
+            AddTextureArrayToAsset(controlArray, existing);
+            AddTextureArrayToAsset(layerDiffuseArray, existing);
+            AddTextureArrayToAsset(layerNormalArray, existing);
+            AddTextureArrayToAsset(layerMaskArray, existing);
             existing.SetData(
                 asset.PatchSize,
                 asset.LodCount,
@@ -508,25 +788,60 @@ public sealed class GpuTerrainBakedDataEditor : EditorWindow
                 asset.Nodes,
                 asset.RootNodeIndices,
                 heightArray,
-                normalArray);
+                normalArray,
+                controlArray,
+                layerDiffuseArray,
+                layerNormalArray,
+                layerMaskArray,
+                asset.TerrainLayerIndices,
+                asset.LayerTileSizeOffsets,
+                asset.LayerPbrParams);
             DestroyImmediate(asset);
             EditorUtility.SetDirty(existing);
-            EditorUtility.SetDirty(heightArray);
-            EditorUtility.SetDirty(normalArray);
+            SetDirtyIfNotNull(heightArray);
+            SetDirtyIfNotNull(normalArray);
+            SetDirtyIfNotNull(controlArray);
+            SetDirtyIfNotNull(layerDiffuseArray);
+            SetDirtyIfNotNull(layerNormalArray);
+            SetDirtyIfNotNull(layerMaskArray);
             AssetDatabase.SaveAssets();
             AssetDatabase.ImportAsset(path);
             return existing;
         }
 
         AssetDatabase.CreateAsset(asset, path);
-        AssetDatabase.AddObjectToAsset(heightArray, asset);
-        AssetDatabase.AddObjectToAsset(normalArray, asset);
+        AddTextureArrayToAsset(heightArray, asset);
+        AddTextureArrayToAsset(normalArray, asset);
+        AddTextureArrayToAsset(controlArray, asset);
+        AddTextureArrayToAsset(layerDiffuseArray, asset);
+        AddTextureArrayToAsset(layerNormalArray, asset);
+        AddTextureArrayToAsset(layerMaskArray, asset);
         EditorUtility.SetDirty(asset);
-        EditorUtility.SetDirty(heightArray);
-        EditorUtility.SetDirty(normalArray);
+        SetDirtyIfNotNull(heightArray);
+        SetDirtyIfNotNull(normalArray);
+        SetDirtyIfNotNull(controlArray);
+        SetDirtyIfNotNull(layerDiffuseArray);
+        SetDirtyIfNotNull(layerNormalArray);
+        SetDirtyIfNotNull(layerMaskArray);
         AssetDatabase.SaveAssets();
         AssetDatabase.ImportAsset(path);
         return asset;
+    }
+
+    private static void AddTextureArrayToAsset(Texture2DArray textureArray, Object asset)
+    {
+        if (textureArray != null)
+        {
+            AssetDatabase.AddObjectToAsset(textureArray, asset);
+        }
+    }
+
+    private static void SetDirtyIfNotNull(Object asset)
+    {
+        if (asset != null)
+        {
+            EditorUtility.SetDirty(asset);
+        }
     }
 
     private static void RemoveEmbeddedTextureArrays(string path)
@@ -576,5 +891,16 @@ public sealed class GpuTerrainBakedDataEditor : EditorWindow
         EditorPrefs.SetString(OutputPathKey, string.IsNullOrEmpty(assetPath) ? DefaultAssetPath : assetPath);
         EditorPrefs.SetBool(AutoAssignKey, autoAssign);
         EditorPrefs.SetInt(SourceModeKey, sourceMode);
+    }
+
+    private struct BakedMaterialData
+    {
+        public Texture2DArray controlMapArray;
+        public Texture2DArray layerDiffuseArray;
+        public Texture2DArray layerNormalArray;
+        public Texture2DArray layerMaskArray;
+        public Vector4[] terrainLayerIndices;
+        public Vector4[] layerTileSizeOffsets;
+        public Vector4[] layerPbrParams;
     }
 }

@@ -33,6 +33,7 @@ public interface IGpuDrivenShowcaseModule
     string DisplayName { get; }
     void SetCullingMode(GpuDrivenShowcaseCullingMode mode);
     void SetDebugView(GpuDrivenShowcaseDebugView view);
+    void SetDebugColorMode(bool enabled);
     void CollectStats(ref GpuDrivenShowcaseStats stats);
 }
 

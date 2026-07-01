@@ -6,7 +6,7 @@ public sealed class GpuDrivenShowcaseRuntimePanel : MonoBehaviour
     [SerializeField] private bool visible = true;
     [SerializeField] private bool expanded = true;
     [SerializeField] private KeyCode toggleKey = KeyCode.F1;
-    [SerializeField] private Rect windowRect = new Rect(16, 16, 360, 260);
+    [SerializeField] private Rect windowRect = new Rect(16, 16, 360, 284);
     [SerializeField] private Rect collapsedRect = new Rect(16, 16, 176, 30);
 
     private void Awake()
@@ -108,6 +108,12 @@ public sealed class GpuDrivenShowcaseRuntimePanel : MonoBehaviour
         DrawDebugButton(GpuDrivenShowcaseDebugView.None, "Off");
         DrawDebugButton(GpuDrivenShowcaseDebugView.SceneWire, "4 Scene Wire");
         GUILayout.EndHorizontal();
+
+        bool debugColorMode = GUILayout.Toggle(controller.DebugColorMode, "5 LOD Color", GUILayout.Height(24));
+        if (debugColorMode != controller.DebugColorMode)
+        {
+            controller.SetDebugColorMode(debugColorMode);
+        }
     }
 
     private void DrawDebugButton(GpuDrivenShowcaseDebugView view, string label)
@@ -129,6 +135,7 @@ public sealed class GpuDrivenShowcaseRuntimePanel : MonoBehaviour
         GUILayout.Label("Stats");
         GUILayout.Label("Mode: " + controller.CullingMode.ToDisplayName());
         GUILayout.Label("Debug: " + controller.DebugView.ToDisplayName());
+        GUILayout.Label("Color: " + (controller.DebugColorMode ? "LOD Color" : "Off"));
         GUILayout.Label("CPU Frame: " + stats.cpuFrameMs.ToString("0.00") + " ms");
         GUILayout.Label("Hi-Z: " + (stats.hizEnabled ? "On" : "Off"));
         GUILayout.Label("Terrain Patches: " + stats.terrainPatchCount);
@@ -155,7 +162,7 @@ public sealed class GpuDrivenShowcaseRuntimePanel : MonoBehaviour
     private void DrawHelp()
     {
         GUILayout.Label("Hotkeys");
-        GUILayout.Label("1 None | 2 Frustum | 3 Hi-Z | 4 Scene Wire");
+        GUILayout.Label("1 None | 2 Frustum | 3 Hi-Z | 4 Scene Wire | 5 LOD Color");
         GUILayout.Label("F1 Panel | F5 Rebind | RMB + WASDQE Fly");
     }
 }

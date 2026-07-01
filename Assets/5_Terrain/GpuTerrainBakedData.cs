@@ -6,7 +6,9 @@ using UnityEngine;
 public sealed class GpuTerrainBakedData : ScriptableObject
 {
     public const int MaxTerrainCount = 64;
-    private const int CurrentDataVersion = 2;
+    public const int MaxTerrainLayerCount = 64;
+    private const int CurrentDataVersion = 3;
+    private const int MinimumSupportedDataVersion = 2;
 
     [SerializeField] private int dataVersion;
     [SerializeField] private float patchSize = 64.0f;
@@ -16,6 +18,13 @@ public sealed class GpuTerrainBakedData : ScriptableObject
     [SerializeField, HideInInspector] private int[] rootNodeIndices = Array.Empty<int>();
     [SerializeField, HideInInspector] private Texture2DArray heightMapArray;
     [SerializeField, HideInInspector] private Texture2DArray normalMapArray;
+    [SerializeField, HideInInspector] private Texture2DArray controlMapArray;
+    [SerializeField, HideInInspector] private Texture2DArray layerDiffuseArray;
+    [SerializeField, HideInInspector] private Texture2DArray layerNormalArray;
+    [SerializeField, HideInInspector] private Texture2DArray layerMaskArray;
+    [SerializeField, HideInInspector] private Vector4[] terrainLayerIndices = Array.Empty<Vector4>();
+    [SerializeField, HideInInspector] private Vector4[] layerTileSizeOffsets = Array.Empty<Vector4>();
+    [SerializeField, HideInInspector] private Vector4[] layerPbrParams = Array.Empty<Vector4>();
 
     public float PatchSize => patchSize;
     public int LodCount => lodCount;
@@ -27,8 +36,17 @@ public sealed class GpuTerrainBakedData : ScriptableObject
     public int[] RootNodeIndices => rootNodeIndices;
     public Texture2DArray HeightMapArray => heightMapArray;
     public Texture2DArray NormalMapArray => normalMapArray;
+    public Texture2DArray ControlMapArray => controlMapArray;
+    public Texture2DArray LayerDiffuseArray => layerDiffuseArray;
+    public Texture2DArray LayerNormalArray => layerNormalArray;
+    public Texture2DArray LayerMaskArray => layerMaskArray;
+    public Vector4[] TerrainLayerIndices => terrainLayerIndices;
+    public Vector4[] LayerTileSizeOffsets => layerTileSizeOffsets;
+    public Vector4[] LayerPbrParams => layerPbrParams;
+    public int LayerCount => layerTileSizeOffsets != null ? layerTileSizeOffsets.Length : 0;
 
-    public bool IsValid => dataVersion == CurrentDataVersion &&
+    public bool IsValid => dataVersion >= MinimumSupportedDataVersion &&
+                           dataVersion <= CurrentDataVersion &&
                            terrains != null && terrains.Length > 0 &&
                            terrains.Length <= MaxTerrainCount &&
                            nodes != null && nodes.Length > 0 &&
@@ -38,6 +56,23 @@ public sealed class GpuTerrainBakedData : ScriptableObject
                            heightMapArray.depth >= terrains.Length &&
                            normalMapArray.depth >= terrains.Length;
 
+    public bool HasLayerData => IsValid &&
+                                controlMapArray != null &&
+                                layerDiffuseArray != null &&
+                                layerNormalArray != null &&
+                                layerMaskArray != null &&
+                                terrainLayerIndices != null &&
+                                layerTileSizeOffsets != null &&
+                                layerPbrParams != null &&
+                                controlMapArray.depth >= TerrainCount &&
+                                layerDiffuseArray.depth >= LayerCount &&
+                                layerNormalArray.depth >= LayerCount &&
+                                layerMaskArray.depth >= LayerCount &&
+                                terrainLayerIndices.Length >= TerrainCount &&
+                                layerPbrParams.Length >= LayerCount &&
+                                LayerCount > 0 &&
+                                LayerCount <= MaxTerrainLayerCount;
+
     public void SetData(
         float patchSize,
         int lodCount,
@@ -45,7 +80,14 @@ public sealed class GpuTerrainBakedData : ScriptableObject
         BakedNode[] bakedNodes,
         int[] roots,
         Texture2DArray bakedHeightMapArray,
-        Texture2DArray bakedNormalMapArray)
+        Texture2DArray bakedNormalMapArray,
+        Texture2DArray bakedControlMapArray = null,
+        Texture2DArray bakedLayerDiffuseArray = null,
+        Texture2DArray bakedLayerNormalArray = null,
+        Texture2DArray bakedLayerMaskArray = null,
+        Vector4[] bakedTerrainLayerIndices = null,
+        Vector4[] bakedLayerTileSizeOffsets = null,
+        Vector4[] bakedLayerPbrParams = null)
     {
         dataVersion = CurrentDataVersion;
         this.patchSize = Mathf.Max(1.0f, patchSize);
@@ -55,6 +97,13 @@ public sealed class GpuTerrainBakedData : ScriptableObject
         rootNodeIndices = roots ?? Array.Empty<int>();
         heightMapArray = bakedHeightMapArray;
         normalMapArray = bakedNormalMapArray;
+        controlMapArray = bakedControlMapArray;
+        layerDiffuseArray = bakedLayerDiffuseArray;
+        layerNormalArray = bakedLayerNormalArray;
+        layerMaskArray = bakedLayerMaskArray;
+        terrainLayerIndices = bakedTerrainLayerIndices ?? Array.Empty<Vector4>();
+        layerTileSizeOffsets = bakedLayerTileSizeOffsets ?? Array.Empty<Vector4>();
+        layerPbrParams = bakedLayerPbrParams ?? Array.Empty<Vector4>();
     }
 
     [Serializable]

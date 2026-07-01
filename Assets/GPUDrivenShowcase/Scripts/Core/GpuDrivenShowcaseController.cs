@@ -8,6 +8,7 @@ public sealed class GpuDrivenShowcaseController : MonoBehaviour
     [Header("Runtime State")]
     [SerializeField] private GpuDrivenShowcaseCullingMode cullingMode = GpuDrivenShowcaseCullingMode.FrustumAndHiZ;
     [SerializeField] private GpuDrivenShowcaseDebugView debugView = GpuDrivenShowcaseDebugView.None;
+    [SerializeField] private bool debugColorMode;
 
     [Header("Input")]
     [SerializeField] private bool enableHotkeys = true;
@@ -15,6 +16,7 @@ public sealed class GpuDrivenShowcaseController : MonoBehaviour
     [SerializeField] private KeyCode frustumKey = KeyCode.Alpha2;
     [SerializeField] private KeyCode hizKey = KeyCode.Alpha3;
     [SerializeField] private KeyCode debugViewKey = KeyCode.Alpha4;
+    [SerializeField] private KeyCode debugColorKey = KeyCode.Alpha5;
     [SerializeField] private KeyCode refreshModulesKey = KeyCode.F5;
 
     [Header("Modules")]
@@ -27,6 +29,7 @@ public sealed class GpuDrivenShowcaseController : MonoBehaviour
 
     public GpuDrivenShowcaseCullingMode CullingMode => cullingMode;
     public GpuDrivenShowcaseDebugView DebugView => debugView;
+    public bool DebugColorMode => debugColorMode;
     public GpuDrivenShowcaseStats Stats => stats;
     public int ModuleCount => modules.Count;
 
@@ -86,6 +89,17 @@ public sealed class GpuDrivenShowcaseController : MonoBehaviour
         }
 
         debugView = view;
+        ApplyModeToModules();
+    }
+
+    public void SetDebugColorMode(bool enabled)
+    {
+        if (debugColorMode == enabled)
+        {
+            return;
+        }
+
+        debugColorMode = enabled;
         ApplyModeToModules();
     }
 
@@ -157,6 +171,7 @@ public sealed class GpuDrivenShowcaseController : MonoBehaviour
         {
             modules[i].SetCullingMode(cullingMode);
             modules[i].SetDebugView(debugView);
+            modules[i].SetDebugColorMode(debugColorMode);
         }
     }
 
@@ -189,6 +204,11 @@ public sealed class GpuDrivenShowcaseController : MonoBehaviour
             SetDebugView(debugView == GpuDrivenShowcaseDebugView.SceneWire
                 ? GpuDrivenShowcaseDebugView.None
                 : GpuDrivenShowcaseDebugView.SceneWire);
+        }
+
+        if (Input.GetKeyDown(debugColorKey))
+        {
+            SetDebugColorMode(!debugColorMode);
         }
 
         if (Input.GetKeyDown(refreshModulesKey))
@@ -238,6 +258,14 @@ public sealed class GpuDrivenShowcaseController : MonoBehaviour
             }
         }
 
+        public void SetDebugColorMode(bool enabled)
+        {
+            if (target != null)
+            {
+                target.SetShowcaseDebugColorMode(enabled);
+            }
+        }
+
         public void CollectStats(ref GpuDrivenShowcaseStats stats)
         {
             if (target != null)
@@ -272,6 +300,10 @@ public sealed class GpuDrivenShowcaseController : MonoBehaviour
             {
                 target.SetShowcaseDebugView(view);
             }
+        }
+
+        public void SetDebugColorMode(bool enabled)
+        {
         }
 
         public void CollectStats(ref GpuDrivenShowcaseStats stats)

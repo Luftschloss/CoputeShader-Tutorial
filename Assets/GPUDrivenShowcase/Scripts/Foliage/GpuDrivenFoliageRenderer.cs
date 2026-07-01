@@ -213,6 +213,10 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
         debugStatsEnabled = view == GpuDrivenShowcaseDebugView.SceneWire;
     }
 
+    public void SetDebugColorMode(bool enabled)
+    {
+    }
+
     public void CollectStats(ref GpuDrivenShowcaseStats showcaseStats)
     {
         showcaseStats.foliageInstanceCount += foliageData != null ? foliageData.InstanceCount : 0;

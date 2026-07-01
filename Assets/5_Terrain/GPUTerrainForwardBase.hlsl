@@ -24,6 +24,8 @@ struct Varyings
 #endif
     float3 normal : TEXCOORD3;
     float3 positionWS : TEXCOORD4;
+    float2 terrainUV : TEXCOORD5;
+    float terrainIndex : TEXCOORD6;
     float4 clipPos : SV_POSITION;
     half4 color : COLOR;
 };
@@ -51,14 +53,28 @@ TEXTURE2D_ARRAY(_TerrainHeightmapTextureArray);
 SAMPLER(sampler_TerrainHeightmapTextureArray);
 TEXTURE2D_ARRAY(_TerrainNormalmapTextureArray);
 SAMPLER(sampler_TerrainNormalmapTextureArray);
+TEXTURE2D_ARRAY(_TerrainControlTextureArray);
+SAMPLER(sampler_TerrainControlTextureArray);
+TEXTURE2D_ARRAY(_TerrainLayerDiffuseArray);
+SAMPLER(sampler_TerrainLayerDiffuseArray);
+TEXTURE2D_ARRAY(_TerrainLayerNormalArray);
+SAMPLER(sampler_TerrainLayerNormalArray);
+TEXTURE2D_ARRAY(_TerrainLayerMaskArray);
+SAMPLER(sampler_TerrainLayerMaskArray);
 
 float4 _TerrainParams[64];
 float4 _TerrainOriginSizes[64];
+float4 _TerrainLayerIndices[64];
+float4 _TerrainLayerTileSizeOffsets[64];
+float4 _TerrainLayerPbrParams[64];
 float4 _TerrainLodDebugColors[16];
 float4 _BaseColor;
 int _TerrainCount;
+int _TerrainLayerCount;
 int _TerrainLodDebugColorCount;
+int _TerrainMaterialDebugMode;
 float _TerrainDebugColorMode;
+float _TerrainHasLayerData;
 
 #if GPUTERRAIN_APPLY_SHADOW_BIAS
 float3 _LightDirection;
@@ -86,6 +102,94 @@ half4 GetTerrainLodDebugColor(int mipmap)
     int colorCount = clamp(_TerrainLodDebugColorCount, 1, 16);
     int colorIndex = clamp(mipmap, 0, colorCount - 1);
     return half4(_TerrainLodDebugColors[colorIndex]);
+}
+
+int GetSafeTerrainLayerIndex(float rawIndex)
+{
+    return clamp((int)round(rawIndex), 0, max(_TerrainLayerCount - 1, 0));
+}
+
+float2 GetTerrainLayerUV(float2 positionWSXZ, int layerIndex)
+{
+    float4 tileSizeOffset = _TerrainLayerTileSizeOffsets[layerIndex];
+    float2 tileSize = max(tileSizeOffset.xy, 1e-5f);
+    return (positionWSXZ - tileSizeOffset.zw) / tileSize;
+}
+
+half3 SampleTerrainLayerDiffuse(float2 positionWSXZ, int layerIndex)
+{
+    float2 layerUV = GetTerrainLayerUV(positionWSXZ, layerIndex);
+    return SAMPLE_TEXTURE2D_ARRAY(_TerrainLayerDiffuseArray, sampler_TerrainLayerDiffuseArray, layerUV, layerIndex).rgb;
+}
+
+half4 SampleTerrainControlWeights(float2 terrainUV, int terrainIndex)
+{
+    half4 weights = SAMPLE_TEXTURE2D_ARRAY(_TerrainControlTextureArray, sampler_TerrainControlTextureArray, terrainUV, terrainIndex);
+    half weightSum = max(dot(weights, half4(1.0h, 1.0h, 1.0h, 1.0h)), 1e-4h);
+    return weights / weightSum;
+}
+
+half3 SampleTerrainLayerBlend(float2 terrainUV, float2 positionWSXZ, float terrainIndexValue)
+{
+    if (_TerrainHasLayerData < 0.5f || _TerrainLayerCount <= 0)
+    {
+        return _BaseColor.rgb;
+    }
+
+    int terrainIndex = clamp((int)round(terrainIndexValue), 0, max(_TerrainCount - 1, 0));
+    half4 weights = SampleTerrainControlWeights(terrainUV, terrainIndex);
+    float4 layerIndices = _TerrainLayerIndices[terrainIndex];
+    int layer0 = GetSafeTerrainLayerIndex(layerIndices.x);
+    int layer1 = GetSafeTerrainLayerIndex(layerIndices.y);
+    int layer2 = GetSafeTerrainLayerIndex(layerIndices.z);
+    int layer3 = GetSafeTerrainLayerIndex(layerIndices.w);
+
+    half3 color =
+        SampleTerrainLayerDiffuse(positionWSXZ, layer0) * weights.r +
+        SampleTerrainLayerDiffuse(positionWSXZ, layer1) * weights.g +
+        SampleTerrainLayerDiffuse(positionWSXZ, layer2) * weights.b +
+        SampleTerrainLayerDiffuse(positionWSXZ, layer3) * weights.a;
+
+    return color * _BaseColor.rgb;
+}
+
+half3 GetTerrainMaterialDebugColor(float2 terrainUV, float2 positionWSXZ, float terrainIndexValue)
+{
+    int terrainIndex = clamp((int)round(terrainIndexValue), 0, max(_TerrainCount - 1, 0));
+    half3 debugColor = half3(1.0h, 0.0h, 0.0h);
+
+    if (_TerrainMaterialDebugMode == 8)
+    {
+        debugColor = _TerrainHasLayerData > 0.5f ? half3(0.0h, 1.0h, 0.0h) : half3(1.0h, 0.0h, 0.0h);
+    }
+    else if (_TerrainHasLayerData >= 0.5f && _TerrainLayerCount > 0)
+    {
+        if (_TerrainMaterialDebugMode == 3)
+        {
+            debugColor = SampleTerrainControlWeights(terrainUV, terrainIndex).rgb;
+        }
+        else
+        {
+            float4 layerIndices = _TerrainLayerIndices[terrainIndex];
+            int layerIndex = GetSafeTerrainLayerIndex(layerIndices.x);
+            if (_TerrainMaterialDebugMode == 5)
+            {
+                layerIndex = GetSafeTerrainLayerIndex(layerIndices.y);
+            }
+            else if (_TerrainMaterialDebugMode == 6)
+            {
+                layerIndex = GetSafeTerrainLayerIndex(layerIndices.z);
+            }
+            else if (_TerrainMaterialDebugMode == 7)
+            {
+                layerIndex = GetSafeTerrainLayerIndex(layerIndices.w);
+            }
+
+            debugColor = SampleTerrainLayerDiffuse(positionWSXZ, layerIndex);
+        }
+    }
+
+    return debugColor;
 }
 
 #if GPUTERRAIN_APPLY_SHADOW_BIAS
@@ -139,6 +243,8 @@ Varyings TerrainVertexCommon(Attributes input, uint instanceID)
 
     output.normal = normalWS;
     output.positionWS = positionWS;
+    output.terrainUV = terrainUV;
+    output.terrainIndex = (float)terrainIndex;
     output.clipPos = TransformWorldToHClip(positionWS);
 #if GPUTERRAIN_APPLY_SHADOW_BIAS
 #if defined(UNITY_REVERSED_Z)
@@ -175,7 +281,18 @@ half4 TerrainFragment(Varyings input) : SV_Target
 #else
     float shadowAttenuation = mainLight.shadowAttenuation;
 #endif
-    float3 color = _BaseColor.rgb * (0.25 + ndotl * shadowAttenuation * 0.75) * mainLight.color;
+    float3 albedo = SampleTerrainLayerBlend(input.terrainUV, input.positionWS.xz, input.terrainIndex);
+    if (_TerrainMaterialDebugMode >= 2)
+    {
+        if (_TerrainMaterialDebugMode == 2)
+        {
+            return half4(albedo, _BaseColor.a);
+        }
+
+        return half4(GetTerrainMaterialDebugColor(input.terrainUV, input.positionWS.xz, input.terrainIndex), _BaseColor.a);
+    }
+
+    float3 color = albedo * (0.25 + ndotl * shadowAttenuation * 0.75) * mainLight.color;
 
     if (_TerrainDebugColorMode > 0.5f)
     {

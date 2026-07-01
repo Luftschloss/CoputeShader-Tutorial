@@ -24,6 +24,8 @@ public sealed class GpuTerrainBakedDataInspector : Editor
             EditorGUILayout.FloatField("Root Patch Size", data.PatchSize);
             EditorGUILayout.IntField("LOD Levels", data.LodCount);
             EditorGUILayout.IntField("Terrain Count", data.TerrainCount);
+            EditorGUILayout.IntField("Layer Count", data.LayerCount);
+            EditorGUILayout.Toggle("Has Layer Data", data.HasLayerData);
             EditorGUILayout.IntField("Root Node Count", data.RootNodeCount);
             EditorGUILayout.IntField("Total Node Count", data.NodeCount);
         }
@@ -32,6 +34,10 @@ public sealed class GpuTerrainBakedDataInspector : Editor
         EditorGUILayout.LabelField("Texture Arrays", EditorStyles.boldLabel);
         DrawTextureArraySummary("Height Map", data.HeightMapArray);
         DrawTextureArraySummary("Normal Map", data.NormalMapArray);
+        DrawTextureArraySummary("Control Map", data.ControlMapArray);
+        DrawTextureArraySummary("Layer Diffuse", data.LayerDiffuseArray);
+        DrawTextureArraySummary("Layer Normal", data.LayerNormalArray);
+        DrawTextureArraySummary("Layer Mask", data.LayerMaskArray);
 
         GUILayout.Space(8.0f);
         EditorGUILayout.HelpBox(
@@ -64,7 +70,8 @@ public sealed class GpuTerrainBakedDataInspector : Editor
 
             string summary = textureArray.width + "x" + textureArray.height +
                              " x " + textureArray.depth +
-                             " slices, " + textureArray.format;
+                             " slices, " + textureArray.mipmapCount +
+                             " mips, " + textureArray.format;
             EditorGUILayout.LabelField(label, summary);
         }
     }
