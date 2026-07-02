@@ -4,15 +4,17 @@ using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Profiling;
 using UnityEngine.Rendering;
-using UnityEngine.Serialization;
 
 public class GPUTerrain : MonoBehaviour
 {
-    private static readonly List<GPUTerrain> ActiveTerrains = new List<GPUTerrain>();
     private const int HiZStatsCount = 6;
     private const int IndirectArgsCount = 5;
     private const int NodeInfoStride = 40;
+    private const int DefaultTerrainLodConfigCount = 5;
+    private const float DefaultMaxLodDistance = 1000.0f;
     private const int MaxTerrainLodDebugColorCount = 16;
+
+    // 缓存 shader 属性 ID，供材质、compute 和 property block 绑定复用。
     private static readonly int TerrainDebugColorModeId = Shader.PropertyToID("_TerrainDebugColorMode");
     private static readonly int TerrainMaterialDebugModeId = Shader.PropertyToID("_TerrainMaterialDebugMode");
     private static readonly int TerrainLodDebugColorsId = Shader.PropertyToID("_TerrainLodDebugColors");
@@ -39,29 +41,24 @@ public class GPUTerrain : MonoBehaviour
     private static readonly int CollectStatsId = Shader.PropertyToID("_CollectStats");
     private const string ReverseZKeyword = "_REVERSE_Z";
 
-    public static int ActiveTerrainCount => ActiveTerrains.Count;
-    public static GPUTerrain GetActiveTerrain(int index) => ActiveTerrains[index];
-
     [Header("Baked Data")]
+    // 运行时唯一消费的 Bake 地形数据源，包含节点、纹理和材质数据。
     [SerializeField] private GpuTerrainBakedData bakedData;
+    // 归一化 patch 网格，每个选中的地形节点实例化绘制一次。
     [SerializeField] private Mesh instanceMesh;
 
     [Header("LOD")]
-    [SerializeField] private TerrainLodConfig[] lodConfigs =
-    {
-        new TerrainLodConfig(100.0f, new Color(1.0f, 0.0f, 0.0f, 1.0f)),
-        new TerrainLodConfig(200.0f, new Color(0.75f, 0.0f, 0.25f, 1.0f)),
-        new TerrainLodConfig(500.0f, new Color(0.5f, 0.0f, 0.5f, 1.0f)),
-        new TerrainLodConfig(1000.0f, new Color(0.25f, 0.0f, 0.75f, 1.0f)),
-        new TerrainLodConfig(0.0f, new Color(0.0f, 0.0f, 1.0f, 1.0f))
-    };
-    [SerializeField, HideInInspector, FormerlySerializedAs("lodDistance")] private float[] legacyLodDistance;
-    [SerializeField, HideInInspector, FormerlySerializedAs("lodDebugColors")] private Color[] legacyLodDebugColors;
+    // 每个 mip 的 CPU LOD 距离阈值和 shader 调试颜色，长度对齐 bakedData.LodCount。
+    [SerializeField] private TerrainLodConfig[] lodConfigs = CreateDefaultLodConfigs(DefaultTerrainLodConfigCount);
+    // 触发 active node 集合重建的最小相机 XZ 移动距离。
     [SerializeField, Range(0.0f, 5.0f)] private float lodRebuildDistanceThreshold = 0.5f;
 
     [Header("Hi-Z Terrain Culling")]
+    // 预留的地形深度写入 Hi-Z 路径；当前 URP feature 尚未接入。
     [SerializeField] private bool writeTerrainDepthToHiZ;
+    // Hi-Z 遮挡测试投影地形 bounds 时使用的深度偏移。
     [SerializeField, Range(0.0f, 100.0f)] private float hizDepthBias = 1.0f;
+    // compute 视锥剔除使用的 clip-space 扩张量。
     [SerializeField, Range(0.0f, 0.2f)] private float frustumPadding = 0.03f;
 
     [Header("Shadow Map")]
@@ -70,79 +67,116 @@ public class GPUTerrain : MonoBehaviour
     [SerializeField] private bool shadowMapUsesAllPatches = true;
 
     [Header("Rendering")]
+    // 地形 frustum 和 Hi-Z 剔除使用的 compute shader。
     [SerializeField] private ComputeShader cullingComputeShader;
+    // 运行时地形材质，消费 baked texture arrays 和 node buffer。
     [SerializeField] private Material mat;
 
     [Header("Debug")]
+    // shader 侧地形材质可视化模式。
     [SerializeField] private TerrainMaterialDebugMode materialDebugMode = TerrainMaterialDebugMode.Lit;
 
+    // 相机持有的 Hi-Z 纹理提供者，供 terrain 和 foliage culling 共享。
     public DepthTextureGenerator depthTextureGenerator;
+    // 开启 GPU stats readback 和 SceneView wire 调试。
     public bool DebugGizmos;
 
+    // 从 baked TerrainTileInfo 和材质元数据派生出的每 terrain shader 上传数组。
     private readonly Vector4[] terrainParams = new Vector4[GpuTerrainBakedData.MaxTerrainCount];
     private readonly Vector4[] terrainOriginSizes = new Vector4[GpuTerrainBakedData.MaxTerrainCount];
     private readonly Vector4[] terrainLayerIndices = new Vector4[GpuTerrainBakedData.MaxTerrainCount];
     private readonly Vector4[] terrainLayerTileSizeOffsets = new Vector4[GpuTerrainBakedData.MaxTerrainLayerCount];
     private readonly Vector4[] terrainLayerPbrParams = new Vector4[GpuTerrainBakedData.MaxTerrainLayerCount];
+    // 上传到地形 shader 的每 mip 调试颜色。
     private readonly Vector4[] terrainLodDebugColors = new Vector4[MaxTerrainLodDebugColorCount];
+    // DrawMeshInstancedIndirect 参数的 CPU 侧暂存副本。
     private readonly uint[] args = new uint[IndirectArgsCount] { 0, 0, 0, 0, 0 };
+    // compute Hi-Z / frustum 调试计数器的 CPU 侧暂存副本。
     private readonly uint[] hizStats = new uint[HiZStatsCount];
 
+    // baked texture array 引用，直接绑定到全局和材质地形 shader 属性。
     private Texture2DArray heightMapArray;
     private Texture2DArray normalMapArray;
     private Texture2DArray controlMapArray;
     private Texture2DArray layerDiffuseArray;
     private Texture2DArray layerNormalArray;
     private Texture2DArray layerMaskArray;
+    // 覆盖所有 baked terrain tile 的保守 indirect draw bounds。
     private Bounds nodeBounds = new Bounds(Vector3.zero, new Vector3(1000.0f, 1000.0f, 1000.0f));
+    // active GpuTerrainNodeInfo 结构化 buffer，供 culling 和 vertex shader 使用。
     private ComputeBuffer allInstancePosBuffer;
+    // compute culling 写入可见 active-node ID 的 append buffer。
     private ComputeBuffer visibleInstancePosIDBuffer;
+    // 顺序 active-node ID buffer，用于 no-culling、shadow 和 depth-only 路径。
     private ComputeBuffer allInstancePosIDBuffer;
+    // DrawMeshInstancedIndirect 使用的 indirect args buffer。
     private ComputeBuffer argsBuffer;
+    // 地形 Hi-Z depth injection 路径使用的 indirect args buffer。
     private ComputeBuffer depthArgsBuffer;
+    // 可选 Hi-Z / frustum 调试统计使用的 GPU counter buffer。
     private ComputeBuffer hizStatsBuffer;
+    // SceneView 可见节点 wire 调试使用的可选 append/readback buffer。
     private ComputeBuffer visibleNodeInfoBuffer;
+    // active node 数据的持久上传内存，避免每帧分配。
     private NativeArray<GpuTerrainNodeInfo> activeNodeInfoUpload;
+    // 顺序 active node ID 的持久上传内存。
     private NativeArray<uint> allNodeIdsUpload;
+    // indirect args 更新使用的持久上传内存。
     private NativeArray<uint> argsUpload;
+    // dispatch 前清空 Hi-Z stats 使用的持久上传内存。
     private NativeArray<uint> hizStatsResetUpload;
+    // 可见节点调试绘制使用的 CPU readback 缓存。
     private GpuTerrainNodeInfo[] visibleNodeInfoArray;
+    // 每个 terrain 的 leaf grid，用于 GPU 上传前解析粗 LOD 邻居。
     private TerrainLeafLookup[] terrainLeafLookups = Array.Empty<TerrainLeafLookup>();
+    // 当前和上一帧 active node 在 bakedData.Nodes 中的索引，用于判断 LOD 集合是否变化。
     private int[] activeNodeIndices = Array.Empty<int>();
     private int[] previousActiveNodeIndices = Array.Empty<int>();
+    // CPU traversal 和 GPU dispatch 输入共享的 active node 数量。
     private int activeNodeCount;
     private int previousActiveNodeCount;
+    // 上一次从 GPU 读回的 debug 可见节点数量。
     private int debugVisibleNodeCount;
+    // TerrainCulling.compute 的 kernel index 缓存。
     private int cullTerrainKernel = -1;
-    private Camera camera;
+    // 运行时相机，用于 LOD 选择、视锥矩阵、绘制目标和 Hi-Z 查询。
+    private new Camera camera;
+    // Showcase 选择的 GPU culling 模式，影响 compute dispatch 和材质绑定。
     private GpuDrivenShowcaseCullingMode showcaseCullingMode = GpuDrivenShowcaseCullingMode.FrustumAndHiZ;
+    // Showcase 调试覆盖开关，用于把地形材质输出切到 LOD color。
     private bool showcaseDebugColorMode;
     private TerrainMaterialDebugMode materialDebugModeBeforeShowcaseColor = TerrainMaterialDebugMode.Lit;
+    // 上一帧实际 Hi-Z 可用状态，用于运行时 UI / status。
     private bool lastHizActive;
+    // 强制 CPU LOD traversal，忽略相机移动阈值。
     private bool forceLodRebuild = true;
+    // baked data 变化或 OnValidate 后触发 buffer 和 texture reference 重建。
     private bool terrainResourcesDirty;
+    // 资源变化后触发 compute / material buffer 和静态 shader 状态重新绑定。
     private bool terrainGpuBindingsDirty = true;
+    // active set 或容量变化后重新上传顺序 active node ID。
     private bool nodeIdBufferDirty = true;
+    // 上一次 indirect draw 的可见 patch 数量，用于 status / debug UI。
     private uint lastVisiblePatchCount;
+    // 上一次 active LOD rebuild 时的相机 XZ 位置。
     private Vector2 lastLodBuildCameraXZ;
+    // 地形 Hi-Z depth draw 复用的 property block。
     private MaterialPropertyBlock hizDepthProperties;
+    // 地形 shadow-only draw 复用的 property block。
     private MaterialPropertyBlock shadowProperties;
 
     public void SetBakedData(GpuTerrainBakedData data)
     {
         bakedData = data;
+        EnsureLodConfigDefaults();
         terrainResourcesDirty = true;
         forceLodRebuild = true;
+        terrainGpuBindingsDirty = true;
     }
 
     private void OnEnable()
     {
         EnsureLodConfigDefaults();
-        if (!ActiveTerrains.Contains(this))
-        {
-            ActiveTerrains.Add(this);
-        }
-
         camera = Camera.main;
         RebuildTerrainResources();
         ApplyMaterialState(showcaseCullingMode != GpuDrivenShowcaseCullingMode.None);
@@ -256,7 +290,6 @@ public class GPUTerrain : MonoBehaviour
 
     private void OnDisable()
     {
-        ActiveTerrains.Remove(this);
         ReleaseBuffers();
         ReleaseUploadArrays();
         ReleaseTerrainTextureArrays();
@@ -427,14 +460,29 @@ public class GPUTerrain : MonoBehaviour
         return config != null ? Mathf.Max(0.0f, config.distance) : 0.0f;
     }
 
+    /// <summary>
+    /// 初始化LOD（distance，debugColor）配置
+    /// </summary>
     private void EnsureLodConfigDefaults()
     {
-        MigrateLegacyLodConfig();
-
-        if (lodConfigs == null || lodConfigs.Length == 0)
+        int lodCount = GetExpectedLodConfigCount();
+        if (lodConfigs == null || lodConfigs.Length != lodCount)
         {
-            lodConfigs = CreateDefaultLodConfigs();
-            return;
+            TerrainLodConfig[] defaultConfigs = CreateDefaultLodConfigs(lodCount);
+            if (lodConfigs != null)
+            {
+                int copyCount = Mathf.Min(lodConfigs.Length, defaultConfigs.Length);
+                for (int i = 0; i < copyCount; i++)
+                {
+                    if (lodConfigs[i] != null)
+                    {
+                        defaultConfigs[i].distance = Mathf.Max(0.0f, lodConfigs[i].distance);
+                        defaultConfigs[i].debugColor = lodConfigs[i].debugColor;
+                    }
+                }
+            }
+
+            lodConfigs = defaultConfigs;
         }
 
         for (int i = 0; i < lodConfigs.Length; i++)
@@ -448,43 +496,42 @@ public class GPUTerrain : MonoBehaviour
         }
     }
 
-    private void MigrateLegacyLodConfig()
+    private int GetExpectedLodConfigCount()
     {
-        bool hasLegacyDistance = legacyLodDistance != null && legacyLodDistance.Length > 0;
-        bool hasLegacyColors = legacyLodDebugColors != null && legacyLodDebugColors.Length > 0;
-        if (!hasLegacyDistance && !hasLegacyColors)
+        if (bakedData != null)
         {
-            return;
+            return Mathf.Max(1, bakedData.LodCount);
         }
 
-        int count = Mathf.Clamp(Mathf.Max(
-            hasLegacyDistance ? legacyLodDistance.Length : 0,
-            hasLegacyColors ? legacyLodDebugColors.Length : 0), 1, MaxTerrainLodDebugColorCount);
-        TerrainLodConfig[] migratedConfigs = new TerrainLodConfig[count];
-        for (int i = 0; i < count; i++)
+        if (lodConfigs != null && lodConfigs.Length > 0)
         {
-            float distance = hasLegacyDistance && i < legacyLodDistance.Length ? legacyLodDistance[i] : 0.0f;
-            Color debugColor = hasLegacyColors && i < legacyLodDebugColors.Length
-                ? legacyLodDebugColors[i]
-                : GetDefaultLodDebugColor(i, count);
-            migratedConfigs[i] = new TerrainLodConfig(distance, debugColor);
+            return lodConfigs.Length;
         }
 
-        lodConfigs = migratedConfigs;
-        legacyLodDistance = null;
-        legacyLodDebugColors = null;
+        return DefaultTerrainLodConfigCount;
     }
 
-    private static TerrainLodConfig[] CreateDefaultLodConfigs()
+    private static TerrainLodConfig[] CreateDefaultLodConfigs(int lodCount)
     {
-        return new[]
+        lodCount = Mathf.Max(1, lodCount);
+        TerrainLodConfig[] configs = new TerrainLodConfig[lodCount];
+        for (int i = 0; i < configs.Length; i++)
         {
-            new TerrainLodConfig(100.0f, GetDefaultLodDebugColor(0, 5)),
-            new TerrainLodConfig(200.0f, GetDefaultLodDebugColor(1, 5)),
-            new TerrainLodConfig(500.0f, GetDefaultLodDebugColor(2, 5)),
-            new TerrainLodConfig(1000.0f, GetDefaultLodDebugColor(3, 5)),
-            new TerrainLodConfig(0.0f, GetDefaultLodDebugColor(4, 5))
-        };
+            configs[i] = new TerrainLodConfig(GetDefaultLodDistance(i, lodCount), GetDefaultLodDebugColor(i, lodCount));
+        }
+
+        return configs;
+    }
+
+    private static float GetDefaultLodDistance(int index, int count)
+    {
+        if (count <= 1)
+        {
+            return DefaultMaxLodDistance;
+        }
+
+        float t = Mathf.Clamp01((float)index / (count - 1));
+        return t * DefaultMaxLodDistance;
     }
 
     private static Color GetDefaultLodDebugColor(int index, int count)
@@ -529,11 +576,14 @@ public class GPUTerrain : MonoBehaviour
         return Mathf.Max(0.001f, bakedData.PatchSize / subdivisionScale);
     }
 
+    Vector2 cameraXZ;
+
     private void RebuildVisibleTerrainNodes()
     {
         activeNodeCount = 0;
 
-        Vector2 cameraXZ = new Vector2(camera.transform.position.x, camera.transform.position.z);
+        cameraXZ.x = camera.transform.position.x;
+        cameraXZ.y = camera.transform.position.z;
         int[] roots = bakedData.RootNodeIndices;
         GpuTerrainBakedData.BakedNode[] nodes = bakedData.Nodes;
         Profiler.BeginSample("Gpu Terrain LOD Traverse");
