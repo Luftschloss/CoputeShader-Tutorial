@@ -1,4 +1,7 @@
 #pragma kernel CullTerrain
+#pragma kernel ClearTerrainLeafLookup
+#pragma kernel BuildTerrainLeafLookup
+#pragma kernel BuildTerrainNeighbors
 #pragma multi_compile_local __ _REVERSE_Z
 
 struct NodeInfoData
@@ -17,6 +20,12 @@ struct TerrainBounds
     float3 maxPosition;
 };
 
+struct TerrainLeafLookupInfo
+{
+    float4 originCellSizeMaxX;
+    float4 sizeOffsetMaxZ;
+};
+
 float4x4 _VPMatrix;
 float4x4 _HizCameraMatrixVP;
 Texture2D<float4> _HizMap;
@@ -25,15 +34,193 @@ uint _InstanceCount;
 bool _UseHiZ;
 bool _WriteDebugResult;
 bool _CollectStats;
-StructuredBuffer<NodeInfoData> _AllInstancesPosWSBuffer;
+RWStructuredBuffer<NodeInfoData> _AllInstancesPosWSBuffer;
 AppendStructuredBuffer<NodeInfoData> result;
 AppendStructuredBuffer<uint> _VisibleInstancesOnlyPosWSIDBuffer;
 RWStructuredBuffer<uint> _HiZStatsBuffer;
+StructuredBuffer<TerrainLeafLookupInfo> _TerrainLeafLookupInfoBuffer;
+RWStructuredBuffer<int> _TerrainLeafMipLookupBuffer;
 bool isOpenGL;
 
 float _FrustumPadding;
 float _HizDepthBias;
 float3 _HizCameraPositionWS;
+uint _TerrainLeafLookupCount;
+uint _TerrainLeafLookupCellCount;
+
+int PositionToCellFloor(float localPosition, float cellSize)
+{
+    return (int)floor(localPosition / cellSize);
+}
+
+int PositionToCellCeil(float localPosition, float cellSize)
+{
+    return (int)ceil(localPosition / cellSize);
+}
+
+uint GetTerrainLookupCellIndex(TerrainLeafLookupInfo lookup, int x, int z)
+{
+    uint width = (uint)max((int)round(lookup.sizeOffsetMaxZ.x), 1);
+    uint offset = (uint)max((int)round(lookup.sizeOffsetMaxZ.z), 0);
+    return offset + (uint)z * width + (uint)x;
+}
+
+bool TryGetTerrainLookupInfo(int terrainIndex, out TerrainLeafLookupInfo lookup)
+{
+    if (terrainIndex >= 0 && terrainIndex < (int)_TerrainLeafLookupCount)
+    {
+        lookup = _TerrainLeafLookupInfoBuffer[terrainIndex];
+        return true;
+    }
+
+    lookup.originCellSizeMaxX = 0.0f;
+    lookup.sizeOffsetMaxZ = 0.0f;
+    return false;
+}
+
+bool LookupContainsWorldPoint(TerrainLeafLookupInfo lookup, float worldX, float worldZ)
+{
+    return worldX >= lookup.originCellSizeMaxX.x &&
+           worldX < lookup.originCellSizeMaxX.w &&
+           worldZ >= lookup.originCellSizeMaxX.y &&
+           worldZ < lookup.sizeOffsetMaxZ.w;
+}
+
+bool TryFindActiveNodeMipInLookup(float worldX, float worldZ, TerrainLeafLookupInfo lookup, out int mip)
+{
+    float cellSize = max(lookup.originCellSizeMaxX.z, 1e-5f);
+    int width = max((int)round(lookup.sizeOffsetMaxZ.x), 1);
+    int depth = max((int)round(lookup.sizeOffsetMaxZ.y), 1);
+    int x = PositionToCellFloor(worldX - lookup.originCellSizeMaxX.x, cellSize);
+    int z = PositionToCellFloor(worldZ - lookup.originCellSizeMaxX.y, cellSize);
+    if (x < 0 || x >= width || z < 0 || z >= depth)
+    {
+        mip = 0;
+        return false;
+    }
+
+    uint cellIndex = GetTerrainLookupCellIndex(lookup, x, z);
+    if (cellIndex >= _TerrainLeafLookupCellCount)
+    {
+        mip = 0;
+        return false;
+    }
+
+    mip = _TerrainLeafMipLookupBuffer[cellIndex];
+    return mip >= 0;
+}
+
+bool TryFindActiveNodeMip(float worldX, float worldZ, int preferredTerrainIndex, out int mip)
+{
+    TerrainLeafLookupInfo lookup;
+    if (TryGetTerrainLookupInfo(preferredTerrainIndex, lookup) &&
+        TryFindActiveNodeMipInLookup(worldX, worldZ, lookup, mip))
+    {
+        return true;
+    }
+
+    [loop]
+    for (uint i = 0; i < _TerrainLeafLookupCount; i++)
+    {
+        if ((int)i == preferredTerrainIndex)
+            continue;
+
+        lookup = _TerrainLeafLookupInfoBuffer[i];
+        if (LookupContainsWorldPoint(lookup, worldX, worldZ) &&
+            TryFindActiveNodeMipInLookup(worldX, worldZ, lookup, mip))
+        {
+            return true;
+        }
+    }
+
+    mip = 0;
+    return false;
+}
+
+bool HasCoarserNeighbor(float worldX, float worldZ, int preferredTerrainIndex, int mip)
+{
+    int neighborMip = 0;
+    return TryFindActiveNodeMip(worldX, worldZ, preferredTerrainIndex, neighborMip) && neighborMip > mip;
+}
+
+[numthreads(64,1,1)]
+void ClearTerrainLeafLookup(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _TerrainLeafLookupCellCount)
+        return;
+
+    _TerrainLeafMipLookupBuffer[id.x] = -1;
+}
+
+[numthreads(64,1,1)]
+void BuildTerrainLeafLookup(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _InstanceCount)
+        return;
+
+    NodeInfoData nodeInfo = _AllInstancesPosWSBuffer[id.x];
+    TerrainLeafLookupInfo lookup;
+    if (!TryGetTerrainLookupInfo(nodeInfo.terrainIndex, lookup))
+        return;
+
+    float4 rect = nodeInfo.rect;
+    float cellSize = max(lookup.originCellSizeMaxX.z, 1e-5f);
+    int width = max((int)round(lookup.sizeOffsetMaxZ.x), 1);
+    int depth = max((int)round(lookup.sizeOffsetMaxZ.y), 1);
+
+    int minX = PositionToCellFloor(rect.x - lookup.originCellSizeMaxX.x, cellSize);
+    int minZ = PositionToCellFloor(rect.y - lookup.originCellSizeMaxX.y, cellSize);
+    int maxX = PositionToCellCeil(rect.x + rect.z - lookup.originCellSizeMaxX.x, cellSize) - 1;
+    int maxZ = PositionToCellCeil(rect.y + rect.w - lookup.originCellSizeMaxX.y, cellSize) - 1;
+
+    minX = clamp(minX, 0, width - 1);
+    maxX = clamp(maxX, 0, width - 1);
+    minZ = clamp(minZ, 0, depth - 1);
+    maxZ = clamp(maxZ, 0, depth - 1);
+    if (maxX < minX || maxZ < minZ)
+        return;
+
+    [loop]
+    for (int z = minZ; z <= maxZ; z++)
+    {
+        [loop]
+        for (int x = minX; x <= maxX; x++)
+        {
+            uint cellIndex = GetTerrainLookupCellIndex(lookup, x, z);
+            if (cellIndex < _TerrainLeafLookupCellCount)
+            {
+                _TerrainLeafMipLookupBuffer[cellIndex] = nodeInfo.mipmap;
+            }
+        }
+    }
+}
+
+[numthreads(64,1,1)]
+void BuildTerrainNeighbors(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _InstanceCount)
+        return;
+
+    NodeInfoData nodeInfo = _AllInstancesPosWSBuffer[id.x];
+    float4 rect = nodeInfo.rect;
+    float centerX = rect.x + rect.z * 0.5f;
+    float centerZ = rect.y + rect.w * 0.5f;
+    int terrainIndex = nodeInfo.terrainIndex;
+    int mip = nodeInfo.mipmap;
+    int mask = 0;
+
+    if (HasCoarserNeighbor(centerX, centerZ + rect.w, terrainIndex, mip))
+        mask |= 1;
+    if (HasCoarserNeighbor(centerX, centerZ - rect.w, terrainIndex, mip))
+        mask |= 1 << 1;
+    if (HasCoarserNeighbor(centerX - rect.z, centerZ, terrainIndex, mip))
+        mask |= 1 << 2;
+    if (HasCoarserNeighbor(centerX + rect.z, centerZ, terrainIndex, mip))
+        mask |= 1 << 3;
+
+    nodeInfo.neighbor = mask;
+    _AllInstancesPosWSBuffer[id.x] = nodeInfo;
+}
 
 void IncludeFrustumPlaneResult(
     float4 posCS,

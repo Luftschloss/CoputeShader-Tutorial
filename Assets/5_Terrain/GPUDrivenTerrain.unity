@@ -251,7 +251,7 @@ Camera:
     y: 0
     width: 1
     height: 1
-  near clip plane: 5
+  near clip plane: 1
   far clip plane: 2000
   field of view: 60
   orthographic: 0
@@ -300,7 +300,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   depthTextureShader: {fileID: 4800000, guid: f8fcddc59c8584e43b507f8fc5b42991, type: 3}
-  depthTexture: {fileID: 1970342299}
+  depthTexture: {fileID: 1818888114}
   depthType: 1
   textureSizeMode: 0
   resolutionScale: 1
@@ -793,7 +793,7 @@ MeshFilter:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1658656564}
   m_Mesh: {fileID: 10207, guid: 0000000000000000e000000000000000, type: 0}
---- !u!84 &1970342299
+--- !u!84 &1818888114
 RenderTexture:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}

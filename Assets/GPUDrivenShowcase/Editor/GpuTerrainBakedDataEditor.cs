@@ -542,6 +542,14 @@ public sealed class GpuTerrainBakedDataEditor : EditorWindow
                     layers.Add(layer);
                 }
             }
+
+            if (terrainLayers.Length > 4)
+            {
+                Debug.LogWarning(
+                    "GPU terrain material bake currently renders the first 4 TerrainLayers per terrain. " +
+                    "Extra layers on '" + terrains[i].name + "' will fall back to layer 0 where no first-4 weight exists.",
+                    terrains[i]);
+            }
         }
 
         if (layers.Count == 0)
@@ -661,6 +669,11 @@ public sealed class GpuTerrainBakedDataEditor : EditorWindow
                         layerCount > 1 ? alphamaps[sourceY, sourceX, 1] : 0.0f,
                         layerCount > 2 ? alphamaps[sourceY, sourceX, 2] : 0.0f,
                         layerCount > 3 ? alphamaps[sourceY, sourceX, 3] : 0.0f);
+                    Color control = colors[index - 1];
+                    if (control.r + control.g + control.b + control.a <= 1e-5f)
+                    {
+                        colors[index - 1] = new Color(1.0f, 0.0f, 0.0f, 0.0f);
+                    }
                 }
             }
 

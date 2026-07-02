@@ -125,7 +125,12 @@ half3 SampleTerrainLayerDiffuse(float2 positionWSXZ, int layerIndex)
 half4 SampleTerrainControlWeights(float2 terrainUV, int terrainIndex)
 {
     half4 weights = SAMPLE_TEXTURE2D_ARRAY(_TerrainControlTextureArray, sampler_TerrainControlTextureArray, terrainUV, terrainIndex);
-    half weightSum = max(dot(weights, half4(1.0h, 1.0h, 1.0h, 1.0h)), 1e-4h);
+    half weightSum = dot(weights, half4(1.0h, 1.0h, 1.0h, 1.0h));
+    if (weightSum <= 1e-4h)
+    {
+        return half4(1.0h, 0.0h, 0.0h, 0.0h);
+    }
+
     return weights / weightSum;
 }
 

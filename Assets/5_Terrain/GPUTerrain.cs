@@ -1,5 +1,5 @@
 using System;
-using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Profiling;
@@ -10,6 +10,7 @@ public class GPUTerrain : MonoBehaviour
     private const int HiZStatsCount = 6;
     private const int IndirectArgsCount = 5;
     private const int NodeInfoStride = 40;
+    private const int TerrainLeafLookupInfoStride = 32;
     private const int DefaultTerrainLodConfigCount = 5;
     private const float DefaultMaxLodDistance = 1000.0f;
     private const int MaxTerrainLodDebugColorCount = 16;
@@ -39,6 +40,8 @@ public class GPUTerrain : MonoBehaviour
     private static readonly int HizMapId = Shader.PropertyToID("_HizMap");
     private static readonly int HizMapSizeId = Shader.PropertyToID("_HizMapSize");
     private static readonly int CollectStatsId = Shader.PropertyToID("_CollectStats");
+    private static readonly int TerrainLeafLookupCountId = Shader.PropertyToID("_TerrainLeafLookupCount");
+    private static readonly int TerrainLeafLookupCellCountId = Shader.PropertyToID("_TerrainLeafLookupCellCount");
     private const string ReverseZKeyword = "_REVERSE_Z";
 
     [Header("Baked Data")]
@@ -117,6 +120,8 @@ public class GPUTerrain : MonoBehaviour
     private ComputeBuffer hizStatsBuffer;
     // SceneView 可见节点 wire 调试使用的可选 append/readback buffer。
     private ComputeBuffer visibleNodeInfoBuffer;
+    private ComputeBuffer terrainLeafLookupInfoBuffer;
+    private ComputeBuffer terrainLeafMipLookupBuffer;
     // active node 数据的持久上传内存，避免每帧分配。
     private NativeArray<GpuTerrainNodeInfo> activeNodeInfoUpload;
     // 顺序 active node ID 的持久上传内存。
@@ -125,10 +130,9 @@ public class GPUTerrain : MonoBehaviour
     private NativeArray<uint> argsUpload;
     // dispatch 前清空 Hi-Z stats 使用的持久上传内存。
     private NativeArray<uint> hizStatsResetUpload;
+    private NativeArray<GpuTerrainLeafLookupInfo> terrainLeafLookupInfoUpload;
     // 可见节点调试绘制使用的 CPU readback 缓存。
     private GpuTerrainNodeInfo[] visibleNodeInfoArray;
-    // 每个 terrain 的 leaf grid，用于 GPU 上传前解析粗 LOD 邻居。
-    private TerrainLeafLookup[] terrainLeafLookups = Array.Empty<TerrainLeafLookup>();
     // 当前和上一帧 active node 在 bakedData.Nodes 中的索引，用于判断 LOD 集合是否变化。
     private int[] activeNodeIndices = Array.Empty<int>();
     private int[] previousActiveNodeIndices = Array.Empty<int>();
@@ -139,6 +143,9 @@ public class GPUTerrain : MonoBehaviour
     private int debugVisibleNodeCount;
     // TerrainCulling.compute 的 kernel index 缓存。
     private int cullTerrainKernel = -1;
+    private int clearTerrainLeafLookupKernel = -1;
+    private int buildTerrainLeafLookupKernel = -1;
+    private int buildTerrainNeighborsKernel = -1;
     // 运行时相机，用于 LOD 选择、视锥矩阵、绘制目标和 Hi-Z 查询。
     private new Camera camera;
     // Showcase 选择的 GPU culling 模式，影响 compute dispatch 和材质绑定。
@@ -156,6 +163,8 @@ public class GPUTerrain : MonoBehaviour
     private bool terrainGpuBindingsDirty = true;
     // active set 或容量变化后重新上传顺序 active node ID。
     private bool nodeIdBufferDirty = true;
+    private bool terrainLeafLookupInfoDirty = true;
+    private int terrainLeafLookupCellCount;
     // 上一次 indirect draw 的可见 patch 数量，用于 status / debug UI。
     private uint lastVisiblePatchCount;
     // 上一次 active LOD rebuild 时的相机 XZ 位置。
@@ -314,7 +323,7 @@ public class GPUTerrain : MonoBehaviour
         UpdateNodeBounds();
         BindBakedTextureArrays();
         UpdateTerrainShaderArrays();
-        EnsureTerrainLeafLookups();
+        EnsureTerrainLeafLookupInfo();
         EnsureActiveNodeInfoCapacity(bakedData.NodeCount);
         EnsureActiveNodeIndexCapacity(bakedData.NodeCount);
         EnsureNodeIdCapacity(bakedData.NodeCount);
@@ -610,19 +619,6 @@ public class GPUTerrain : MonoBehaviour
         BuildActiveNodeInfo(nodes);
         Profiler.EndSample();
 
-        Profiler.BeginSample("Gpu Terrain LOD Lookup");
-        BuildActiveNodeLookup();
-        Profiler.EndSample();
-
-        Profiler.BeginSample("Gpu Terrain LOD Neighbors");
-        for (int i = 0; i < activeNodeCount; i++)
-        {
-            GpuTerrainNodeInfo nodeInfo = activeNodeInfoUpload[i];
-            nodeInfo.neighbor = CalculateNeighborMask(nodeInfo);
-            activeNodeInfoUpload[i] = nodeInfo;
-        }
-        Profiler.EndSample();
-
         Profiler.BeginSample("Gpu Terrain LOD Upload");
         UpdateComputeBuffer();
         Profiler.EndSample();
@@ -675,80 +671,6 @@ public class GPUTerrain : MonoBehaviour
         }
     }
 
-    private int CalculateNeighborMask(GpuTerrainNodeInfo nodeInfo)
-    {
-        if (bakedData != null && nodeInfo.mip >= bakedData.LodCount - 1)
-        {
-            return 0;
-        }
-
-        Vector4 rect = nodeInfo.rect;
-        float centerX = rect.x + rect.z * 0.5f;
-        float centerZ = rect.y + rect.w * 0.5f;
-        int terrainIndex = nodeInfo.terrainIndex;
-        int mip = nodeInfo.mip;
-        int mask = 0;
-        if (HasCoarserNeighbor(centerX, centerZ + rect.w, terrainIndex, mip))
-            mask |= 1;
-        if (HasCoarserNeighbor(centerX, centerZ - rect.w, terrainIndex, mip))
-            mask |= 1 << 1;
-        if (HasCoarserNeighbor(centerX - rect.z, centerZ, terrainIndex, mip))
-            mask |= 1 << 2;
-        if (HasCoarserNeighbor(centerX + rect.z, centerZ, terrainIndex, mip))
-            mask |= 1 << 3;
-        return mask;
-    }
-
-    private bool HasCoarserNeighbor(float worldX, float worldZ, int preferredTerrainIndex, int mip)
-    {
-        return TryFindActiveNodeMip(worldX, worldZ, preferredTerrainIndex, out int neighborMip) && neighborMip > mip;
-    }
-
-    private bool TryFindActiveNodeMip(float worldX, float worldZ, int preferredTerrainIndex, out int mip)
-    {
-        if (TryFindActiveNodeMipInTerrain(worldX, worldZ, preferredTerrainIndex, out mip))
-        {
-            return true;
-        }
-
-        for (int i = 0; i < terrainLeafLookups.Length; i++)
-        {
-            if (i == preferredTerrainIndex)
-            {
-                continue;
-            }
-
-            TerrainLeafLookup lookup = terrainLeafLookups[i];
-            if (lookup != null &&
-                lookup.ContainsWorldPoint(worldX, worldZ) &&
-                TryFindActiveNodeMipInTerrain(worldX, worldZ, i, out mip))
-            {
-                return true;
-            }
-        }
-
-        mip = 0;
-        return false;
-    }
-
-    private bool TryFindActiveNodeMipInTerrain(float worldX, float worldZ, int terrainIndex, out int mip)
-    {
-        if (terrainIndex < 0 || terrainIndex >= terrainLeafLookups.Length)
-        {
-            mip = 0;
-            return false;
-        }
-
-        TerrainLeafLookup lookup = terrainLeafLookups[terrainIndex];
-        if (lookup != null && lookup.TryGetActiveNodeMip(worldX, worldZ, out mip))
-        {
-            return true;
-        }
-
-        mip = 0;
-        return false;
-    }
-
     private void UpdateComputeBuffer()
     {
         if (activeNodeCount == 0 || instanceMesh == null || cullingComputeShader == null || mat == null ||
@@ -763,6 +685,7 @@ public class GPUTerrain : MonoBehaviour
         recreatedBuffers |= RecreateBuffer(ref visibleInstancePosIDBuffer, requiredCapacity, sizeof(uint), ComputeBufferType.Append);
         recreatedBuffers |= RecreateBuffer(ref allInstancePosIDBuffer, requiredCapacity, sizeof(uint), ComputeBufferType.Default);
         recreatedBuffers |= RecreateBuffer(ref visibleNodeInfoBuffer, requiredCapacity, NodeInfoStride, ComputeBufferType.Append);
+        recreatedBuffers |= EnsureTerrainLeafLookupBuffers();
 
         EnsureNodeIdCapacity(requiredCapacity);
         if (nodeIdBufferDirty || recreatedBuffers)
@@ -791,6 +714,11 @@ public class GPUTerrain : MonoBehaviour
         }
 
         allInstancePosBuffer.SetData(activeNodeInfoUpload, 0, 0, activeNodeCount);
+        if (terrainLeafLookupInfoDirty && terrainLeafLookupInfoBuffer != null && terrainLeafLookupInfoUpload.IsCreated)
+        {
+            terrainLeafLookupInfoBuffer.SetData(terrainLeafLookupInfoUpload);
+            terrainLeafLookupInfoDirty = false;
+        }
 
         args[0] = instanceMesh.GetIndexCount(0);
         args[1] = (uint)activeNodeCount;
@@ -806,6 +734,7 @@ public class GPUTerrain : MonoBehaviour
         }
 
         BindTerrainGpuResources();
+        DispatchTerrainNeighborUpdate();
     }
 
     private void BindTerrainGpuResources()
@@ -820,21 +749,104 @@ public class GPUTerrain : MonoBehaviour
             cullTerrainKernel = cullingComputeShader.FindKernel("CullTerrain");
         }
 
+        if (clearTerrainLeafLookupKernel < 0)
+        {
+            clearTerrainLeafLookupKernel = cullingComputeShader.FindKernel("ClearTerrainLeafLookup");
+        }
+
+        if (buildTerrainLeafLookupKernel < 0)
+        {
+            buildTerrainLeafLookupKernel = cullingComputeShader.FindKernel("BuildTerrainLeafLookup");
+        }
+
+        if (buildTerrainNeighborsKernel < 0)
+        {
+            buildTerrainNeighborsKernel = cullingComputeShader.FindKernel("BuildTerrainNeighbors");
+        }
+
         cullingComputeShader.SetBuffer(cullTerrainKernel, "_AllInstancesPosWSBuffer", allInstancePosBuffer);
         cullingComputeShader.SetBuffer(cullTerrainKernel, "_VisibleInstancesOnlyPosWSIDBuffer", visibleInstancePosIDBuffer);
         cullingComputeShader.SetBuffer(cullTerrainKernel, "result", visibleNodeInfoBuffer);
         cullingComputeShader.SetBuffer(cullTerrainKernel, "_HiZStatsBuffer", hizStatsBuffer);
+        BindTerrainLodComputeBuffers(clearTerrainLeafLookupKernel);
+        BindTerrainLodComputeBuffers(buildTerrainLeafLookupKernel);
+        BindTerrainLodComputeBuffers(buildTerrainNeighborsKernel);
         cullingComputeShader.SetFloat("_FrustumPadding", frustumPadding);
         cullingComputeShader.SetFloat(HizDepthBiasId, hizDepthBias);
         ConfigureCullingShaderKeywords();
         cullingComputeShader.SetBool("isOpenGL", IsOpenGLClipSpace());
         cullingComputeShader.SetInt("_InstanceCount", activeNodeCount);
+        cullingComputeShader.SetInt(TerrainLeafLookupCountId, terrainLeafLookupInfoUpload.IsCreated ? terrainLeafLookupInfoUpload.Length : 0);
+        cullingComputeShader.SetInt(TerrainLeafLookupCellCountId, terrainLeafLookupCellCount);
         cullingComputeShader.SetBool("_UseHiZ", IsHiZReady());
         cullingComputeShader.SetBool("_WriteDebugResult", DebugGizmos);
         cullingComputeShader.SetBool(CollectStatsId, DebugGizmos);
         mat.SetBuffer("_AllInstancesTransformBuffer", allInstancePosBuffer);
         ApplyMaterialState(showcaseCullingMode != GpuDrivenShowcaseCullingMode.None);
         terrainGpuBindingsDirty = false;
+    }
+
+    private void BindTerrainLodComputeBuffers(int kernel)
+    {
+        if (kernel < 0)
+        {
+            return;
+        }
+
+        cullingComputeShader.SetBuffer(kernel, "_AllInstancesPosWSBuffer", allInstancePosBuffer);
+        cullingComputeShader.SetBuffer(kernel, "_TerrainLeafLookupInfoBuffer", terrainLeafLookupInfoBuffer);
+        cullingComputeShader.SetBuffer(kernel, "_TerrainLeafMipLookupBuffer", terrainLeafMipLookupBuffer);
+    }
+
+    private bool EnsureTerrainLeafLookupBuffers()
+    {
+        bool recreated = false;
+        int lookupCount = terrainLeafLookupInfoUpload.IsCreated ? Mathf.Max(1, terrainLeafLookupInfoUpload.Length) : 1;
+        int cellCount = Mathf.Max(1, terrainLeafLookupCellCount);
+
+        recreated |= RecreateBuffer(
+            ref terrainLeafLookupInfoBuffer,
+            lookupCount,
+            TerrainLeafLookupInfoStride,
+            ComputeBufferType.Default);
+        recreated |= RecreateBuffer(
+            ref terrainLeafMipLookupBuffer,
+            cellCount,
+            sizeof(int),
+            ComputeBufferType.Default);
+
+        if (recreated)
+        {
+            terrainLeafLookupInfoDirty = true;
+        }
+
+        return recreated;
+    }
+
+    private void DispatchTerrainNeighborUpdate()
+    {
+        if (activeNodeCount <= 0 ||
+            clearTerrainLeafLookupKernel < 0 ||
+            buildTerrainLeafLookupKernel < 0 ||
+            buildTerrainNeighborsKernel < 0 ||
+            terrainLeafLookupInfoBuffer == null ||
+            terrainLeafMipLookupBuffer == null)
+        {
+            return;
+        }
+
+        cullingComputeShader.SetInt("_InstanceCount", activeNodeCount);
+        cullingComputeShader.SetInt(TerrainLeafLookupCountId, terrainLeafLookupInfoUpload.IsCreated ? terrainLeafLookupInfoUpload.Length : 0);
+        cullingComputeShader.SetInt(TerrainLeafLookupCellCountId, terrainLeafLookupCellCount);
+
+        Profiler.BeginSample("Gpu Terrain LOD GPU Lookup");
+        cullingComputeShader.Dispatch(clearTerrainLeafLookupKernel, Mathf.CeilToInt(Mathf.Max(1, terrainLeafLookupCellCount) / 64.0f), 1, 1);
+        cullingComputeShader.Dispatch(buildTerrainLeafLookupKernel, Mathf.CeilToInt(activeNodeCount / 64.0f), 1, 1);
+        Profiler.EndSample();
+
+        Profiler.BeginSample("Gpu Terrain LOD GPU Neighbors");
+        cullingComputeShader.Dispatch(buildTerrainNeighborsKernel, Mathf.CeilToInt(activeNodeCount / 64.0f), 1, 1);
+        Profiler.EndSample();
     }
 
     private void ConfigureCullingShaderKeywords()
@@ -952,55 +964,53 @@ public class GPUTerrain : MonoBehaviour
         nodeIdBufferDirty = true;
     }
 
-    private void EnsureTerrainLeafLookups()
+    private void EnsureTerrainLeafLookupInfo()
     {
+        terrainLeafLookupCellCount = 0;
+
         if (bakedData == null || !bakedData.IsValid)
         {
-            terrainLeafLookups = Array.Empty<TerrainLeafLookup>();
+            if (terrainLeafLookupInfoUpload.IsCreated)
+            {
+                terrainLeafLookupInfoUpload.Dispose();
+            }
+
+            terrainLeafLookupInfoDirty = true;
             return;
         }
 
         GpuTerrainBakedData.TerrainTileInfo[] terrains = bakedData.Terrains;
-        if (terrainLeafLookups.Length != terrains.Length)
+        if (!terrainLeafLookupInfoUpload.IsCreated || terrainLeafLookupInfoUpload.Length != terrains.Length)
         {
-            terrainLeafLookups = new TerrainLeafLookup[terrains.Length];
+            if (terrainLeafLookupInfoUpload.IsCreated)
+            {
+                terrainLeafLookupInfoUpload.Dispose();
+            }
+
+            terrainLeafLookupInfoUpload = new NativeArray<GpuTerrainLeafLookupInfo>(
+                terrains.Length,
+                Allocator.Persistent,
+                NativeArrayOptions.UninitializedMemory);
         }
 
         float leafSize = GetLeafPatchSize();
+        int cellOffset = 0;
         for (int i = 0; i < terrains.Length; i++)
         {
-            Vector3 size = terrains[i].size;
             Vector3 origin = terrains[i].worldOrigin;
+            Vector3 size = terrains[i].size;
             int width = Mathf.Max(1, Mathf.CeilToInt(size.x / leafSize));
             int depth = Mathf.Max(1, Mathf.CeilToInt(size.z / leafSize));
-            TerrainLeafLookup lookup = terrainLeafLookups[i];
-            if (lookup == null || !lookup.Matches(origin.x, origin.z, size.x, size.z, leafSize, width, depth))
-            {
-                terrainLeafLookups[i] = new TerrainLeafLookup(origin.x, origin.z, size.x, size.z, leafSize, width, depth);
-            }
-            else
-            {
-                lookup.Clear();
-            }
-        }
-    }
 
-    private void BuildActiveNodeLookup()
-    {
-        for (int i = 0; i < terrainLeafLookups.Length; i++)
-        {
-            terrainLeafLookups[i]?.Clear();
+            terrainLeafLookupInfoUpload[i] = new GpuTerrainLeafLookupInfo(
+                new Vector4(origin.x, origin.z, leafSize, origin.x + size.x),
+                new Vector4(width, depth, cellOffset, origin.z + size.z));
+
+            cellOffset += width * depth;
         }
 
-        for (int i = 0; i < activeNodeCount; i++)
-        {
-            GpuTerrainNodeInfo nodeInfo = activeNodeInfoUpload[i];
-            int terrainIndex = nodeInfo.terrainIndex;
-            if (terrainIndex >= 0 && terrainIndex < terrainLeafLookups.Length)
-            {
-                terrainLeafLookups[terrainIndex]?.MarkActiveNode(nodeInfo.rect, nodeInfo.mip);
-            }
-        }
+        terrainLeafLookupCellCount = Mathf.Max(1, cellOffset);
+        terrainLeafLookupInfoDirty = true;
     }
 
     private void EnsureArgsUploadCapacity()
@@ -1459,9 +1469,16 @@ public class GPUTerrain : MonoBehaviour
         depthArgsBuffer = null;
         visibleNodeInfoBuffer?.Release();
         visibleNodeInfoBuffer = null;
+        terrainLeafLookupInfoBuffer?.Release();
+        terrainLeafLookupInfoBuffer = null;
+        terrainLeafMipLookupBuffer?.Release();
+        terrainLeafMipLookupBuffer = null;
         hizStatsBuffer?.Release();
         hizStatsBuffer = null;
         cullTerrainKernel = -1;
+        clearTerrainLeafLookupKernel = -1;
+        buildTerrainLeafLookupKernel = -1;
+        buildTerrainNeighborsKernel = -1;
         terrainGpuBindingsDirty = true;
     }
 
@@ -1495,6 +1512,11 @@ public class GPUTerrain : MonoBehaviour
         if (hizStatsResetUpload.IsCreated)
         {
             hizStatsResetUpload.Dispose();
+        }
+
+        if (terrainLeafLookupInfoUpload.IsCreated)
+        {
+            terrainLeafLookupInfoUpload.Dispose();
         }
     }
 
@@ -1532,118 +1554,17 @@ public class GPUTerrain : MonoBehaviour
         HasLayerData = 8
     }
 
-    private sealed class TerrainLeafLookup
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct GpuTerrainLeafLookupInfo
+{
+    public Vector4 originCellSizeMaxX;
+    public Vector4 sizeOffsetMaxZ;
+
+    public GpuTerrainLeafLookupInfo(Vector4 originCellSizeMaxX, Vector4 sizeOffsetMaxZ)
     {
-        private readonly float originX;
-        private readonly float originZ;
-        private readonly float maxX;
-        private readonly float maxZ;
-        private readonly float cellSize;
-        private readonly int width;
-        private readonly int depth;
-        private readonly int[] activeNodeMipByCell;
-        private readonly int[] cellStamps;
-        private int currentStamp;
-
-        public TerrainLeafLookup(float originX, float originZ, float terrainSizeX, float terrainSizeZ, float cellSize, int width, int depth)
-        {
-            this.originX = originX;
-            this.originZ = originZ;
-            this.cellSize = cellSize;
-            this.width = width;
-            this.depth = depth;
-            maxX = originX + terrainSizeX;
-            maxZ = originZ + terrainSizeZ;
-            activeNodeMipByCell = new int[Mathf.Max(1, width * depth)];
-            cellStamps = new int[activeNodeMipByCell.Length];
-            Clear();
-        }
-
-        public bool Matches(float otherOriginX, float otherOriginZ, float terrainSizeX, float terrainSizeZ, float otherCellSize, int otherWidth, int otherDepth)
-        {
-            return Mathf.Approximately(originX, otherOriginX) &&
-                   Mathf.Approximately(originZ, otherOriginZ) &&
-                   Mathf.Approximately(maxX, otherOriginX + terrainSizeX) &&
-                   Mathf.Approximately(maxZ, otherOriginZ + terrainSizeZ) &&
-                   Mathf.Approximately(cellSize, otherCellSize) &&
-                   width == otherWidth &&
-                   depth == otherDepth;
-        }
-
-        public void Clear()
-        {
-            currentStamp++;
-            if (currentStamp != int.MaxValue)
-            {
-                return;
-            }
-
-            currentStamp = 1;
-            Array.Clear(cellStamps, 0, cellStamps.Length);
-        }
-
-        public void MarkActiveNode(Vector4 rect, int mip)
-        {
-            int minX = PositionToCellFloor(rect.x - originX);
-            int minZ = PositionToCellFloor(rect.y - originZ);
-            int maxX = PositionToCellCeil(rect.x + rect.z - originX) - 1;
-            int maxZ = PositionToCellCeil(rect.y + rect.w - originZ) - 1;
-            minX = Mathf.Clamp(minX, 0, width - 1);
-            maxX = Mathf.Clamp(maxX, 0, width - 1);
-            minZ = Mathf.Clamp(minZ, 0, depth - 1);
-            maxZ = Mathf.Clamp(maxZ, 0, depth - 1);
-            if (maxX < minX || maxZ < minZ)
-            {
-                return;
-            }
-
-            for (int z = minZ; z <= maxZ; z++)
-            {
-                int row = z * width;
-                for (int x = minX; x <= maxX; x++)
-                {
-                    int cellIndex = row + x;
-                    activeNodeMipByCell[cellIndex] = mip;
-                    cellStamps[cellIndex] = currentStamp;
-                }
-            }
-        }
-
-        public bool TryGetActiveNodeMip(float worldX, float worldZ, out int mip)
-        {
-            int x = PositionToCellFloor(worldX - originX);
-            int z = PositionToCellFloor(worldZ - originZ);
-            if (x < 0 || x >= width || z < 0 || z >= depth)
-            {
-                mip = 0;
-                return false;
-            }
-
-            int cellIndex = z * width + x;
-            if (cellStamps[cellIndex] != currentStamp)
-            {
-                mip = 0;
-                return false;
-            }
-
-            mip = activeNodeMipByCell[cellIndex];
-            return true;
-        }
-
-        public bool ContainsWorldPoint(float worldX, float worldZ)
-        {
-            return worldX >= originX && worldX < maxX &&
-                   worldZ >= originZ && worldZ < maxZ;
-        }
-
-        private int PositionToCellFloor(float localPosition)
-        {
-            return Mathf.FloorToInt(localPosition / cellSize);
-        }
-
-        private int PositionToCellCeil(float localPosition)
-        {
-            return Mathf.CeilToInt(localPosition / cellSize);
-        }
+        this.originCellSizeMaxX = originCellSizeMaxX;
+        this.sizeOffsetMaxZ = sizeOffsetMaxZ;
     }
 }
