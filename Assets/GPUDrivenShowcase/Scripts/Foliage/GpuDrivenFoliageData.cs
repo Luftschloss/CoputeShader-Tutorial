@@ -37,10 +37,14 @@ public struct GpuDrivenFoliagePrototype
     public GameObject prefab;
     public Mesh mesh;
     public Material sourceMaterial;
+    public Texture baseMap;
+    public Color baseColor;
+    public float alphaCutoff;
     public int subMeshIndex;
     public Bounds localBounds;
     public ShadowCastingMode shadowCastingMode;
     public bool receiveShadows;
+    public bool billboard;
 }
 
 [Serializable]

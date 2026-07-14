@@ -7,11 +7,19 @@ using UnityEngine;
 public sealed class GpuTerrainBakedDataEditor : EditorWindow
 {
     private const string DefaultAssetPath = "Assets/5_Terrain/GpuTerrainBakedData.asset";
+    private const string DefaultFoliageAssetPath = "Assets/GPUDrivenShowcase/Generated/GpuDrivenFoliageData.asset";
     private const string PatchSizeKey = "GpuDrivenTerrainBake.PatchSize";
     private const string LodCountKey = "GpuDrivenTerrainBake.LodCount";
     private const string OutputPathKey = "GpuDrivenTerrainBake.OutputPath";
     private const string AutoAssignKey = "GpuDrivenTerrainBake.AutoAssign";
     private const string SourceModeKey = "GpuDrivenTerrainBake.SourceMode";
+    private const string BakeFoliageKey = "GpuDrivenTerrainBake.BakeFoliage";
+    private const string FoliageOutputPathKey = "GpuDrivenTerrainBake.FoliageOutputPath";
+    private const string FoliageIncludeTreesKey = "GpuDrivenTerrainBake.FoliageIncludeTrees";
+    private const string FoliageIncludeDetailsKey = "GpuDrivenTerrainBake.FoliageIncludeDetails";
+    private const string FoliageBakeTextureDetailsKey = "GpuDrivenTerrainBake.FoliageBakeTextureDetails";
+    private const string FoliageAutoAssignKey = "GpuDrivenTerrainBake.FoliageAutoAssign";
+    private const string FoliageMaxDetailPerCellKey = "GpuDrivenTerrainBake.FoliageMaxDetailPerCell";
     private const string HeightMapArrayName = "GPU Terrain Height Map Array";
     private const string NormalMapArrayName = "GPU Terrain Normal Map Array";
     private const string ControlMapArrayName = "GPU Terrain Control Map Array";
@@ -32,6 +40,14 @@ public sealed class GpuTerrainBakedDataEditor : EditorWindow
     private string outputPath = DefaultAssetPath;
     private bool autoAssignToSceneRenderers = true;
     private GpuTerrainBakedData outputAsset;
+    private bool bakeTerrainFoliage = true;
+    private bool foliageIncludeTrees = true;
+    private bool foliageIncludeDetails = true;
+    private bool foliageBakeTextureDetails = true;
+    private bool foliageAutoAssignToSceneRenderer = true;
+    private int foliageMaxInstancesPerDetailCell = 64;
+    private string foliageOutputPath = DefaultFoliageAssetPath;
+    private GpuDrivenFoliageData foliageOutputAsset;
 
     private enum SourceMode
     {
@@ -69,6 +85,14 @@ public sealed class GpuTerrainBakedDataEditor : EditorWindow
         autoAssignToSceneRenderers = EditorPrefs.GetBool(AutoAssignKey, true);
         sourceMode = (SourceMode)EditorPrefs.GetInt(SourceModeKey, (int)SourceMode.AllSceneTerrains);
         outputAsset = AssetDatabase.LoadAssetAtPath<GpuTerrainBakedData>(outputPath);
+        bakeTerrainFoliage = EditorPrefs.GetBool(BakeFoliageKey, true);
+        foliageOutputPath = EditorPrefs.GetString(FoliageOutputPathKey, DefaultFoliageAssetPath);
+        foliageIncludeTrees = EditorPrefs.GetBool(FoliageIncludeTreesKey, true);
+        foliageIncludeDetails = EditorPrefs.GetBool(FoliageIncludeDetailsKey, true);
+        foliageBakeTextureDetails = EditorPrefs.GetBool(FoliageBakeTextureDetailsKey, true);
+        foliageAutoAssignToSceneRenderer = EditorPrefs.GetBool(FoliageAutoAssignKey, true);
+        foliageMaxInstancesPerDetailCell = EditorPrefs.GetInt(FoliageMaxDetailPerCellKey, 64);
+        foliageOutputAsset = AssetDatabase.LoadAssetAtPath<GpuDrivenFoliageData>(foliageOutputPath);
     }
 
     private void OnGUI()
@@ -84,6 +108,53 @@ public sealed class GpuTerrainBakedDataEditor : EditorWindow
         patchSize = Mathf.Max(1.0f, EditorGUILayout.FloatField("Root Patch Size", patchSize));
         lodCount = Mathf.Max(1, EditorGUILayout.IntField("LOD Levels", lodCount));
         autoAssignToSceneRenderers = EditorGUILayout.Toggle("Assign To GPUTerrain", autoAssignToSceneRenderers);
+
+        GUILayout.Space(8.0f);
+        EditorGUILayout.LabelField("Foliage Bake", EditorStyles.boldLabel);
+        bakeTerrainFoliage = EditorGUILayout.Toggle("Bake Unity Terrain Vegetation", bakeTerrainFoliage);
+        using (new EditorGUI.DisabledScope(!bakeTerrainFoliage))
+        {
+            foliageIncludeTrees = EditorGUILayout.Toggle("Include Trees", foliageIncludeTrees);
+            foliageIncludeDetails = EditorGUILayout.Toggle("Include Details", foliageIncludeDetails);
+            foliageBakeTextureDetails = EditorGUILayout.Toggle("Texture Details As Quads", foliageBakeTextureDetails);
+            foliageMaxInstancesPerDetailCell = Mathf.Max(1, EditorGUILayout.IntField("Max Detail Count Per Cell", foliageMaxInstancesPerDetailCell));
+            foliageAutoAssignToSceneRenderer = EditorGUILayout.Toggle("Assign To GPU Foliage", foliageAutoAssignToSceneRenderer);
+
+            GpuDrivenFoliageData selectedFoliageAsset = (GpuDrivenFoliageData)EditorGUILayout.ObjectField(
+                "Foliage Output",
+                foliageOutputAsset,
+                typeof(GpuDrivenFoliageData),
+                false);
+            if (selectedFoliageAsset != foliageOutputAsset)
+            {
+                foliageOutputAsset = selectedFoliageAsset;
+                string selectedPath = foliageOutputAsset != null ? AssetDatabase.GetAssetPath(foliageOutputAsset) : string.Empty;
+                if (!string.IsNullOrEmpty(selectedPath))
+                {
+                    foliageOutputPath = selectedPath;
+                }
+            }
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                foliageOutputPath = EditorGUILayout.TextField("Foliage Asset Path", foliageOutputPath);
+                if (GUILayout.Button("Browse", GUILayout.Width(72.0f)))
+                {
+                    string selectedPath = EditorUtility.SaveFilePanelInProject(
+                        "Save GPU Foliage Baked Data",
+                        Path.GetFileNameWithoutExtension(string.IsNullOrEmpty(foliageOutputPath) ? DefaultFoliageAssetPath : foliageOutputPath),
+                        "asset",
+                        "Choose where to save the baked foliage data.",
+                        Path.GetDirectoryName(string.IsNullOrEmpty(foliageOutputPath) ? DefaultFoliageAssetPath : foliageOutputPath));
+
+                    if (!string.IsNullOrEmpty(selectedPath))
+                    {
+                        foliageOutputPath = selectedPath;
+                        foliageOutputAsset = AssetDatabase.LoadAssetAtPath<GpuDrivenFoliageData>(foliageOutputPath);
+                    }
+                }
+            }
+        }
 
         GUILayout.Space(8.0f);
         EditorGUILayout.LabelField("Output", EditorStyles.boldLabel);
@@ -138,10 +209,32 @@ public sealed class GpuTerrainBakedDataEditor : EditorWindow
                     patchSize,
                     lodCount,
                     autoAssignToSceneRenderers,
-                    true);
+                    false);
                 if (bakedData != null)
                 {
                     outputAsset = bakedData;
+                    GpuDrivenFoliageData bakedFoliageData = null;
+                    if (bakeTerrainFoliage)
+                    {
+                        bakedFoliageData = GpuDrivenTerrainFoliageBaker.BakeFromTerrains(
+                            terrains,
+                            foliageOutputPath,
+                            BuildFoliageSettings(),
+                            false);
+                        if (bakedFoliageData != null)
+                        {
+                            foliageOutputAsset = bakedFoliageData;
+                        }
+                    }
+
+                    string message = "Baked " + bakedData.TerrainCount + " terrains and " + bakedData.NodeCount + " nodes.";
+                    if (bakeTerrainFoliage)
+                    {
+                        message += bakedFoliageData != null
+                            ? "\nBaked " + bakedFoliageData.PrototypeCount + " foliage prototypes and " + bakedFoliageData.InstanceCount + " instances."
+                            : "\nFoliage bake did not produce data.";
+                    }
+                    EditorUtility.DisplayDialog("Bake GPU Terrain", message, "OK");
                 }
             }
         }
@@ -895,6 +988,24 @@ public sealed class GpuTerrainBakedDataEditor : EditorWindow
     private void SavePrefs()
     {
         SavePrefs(patchSize, lodCount, outputPath, autoAssignToSceneRenderers, (int)sourceMode);
+        EditorPrefs.SetBool(BakeFoliageKey, bakeTerrainFoliage);
+        EditorPrefs.SetString(FoliageOutputPathKey, string.IsNullOrEmpty(foliageOutputPath) ? DefaultFoliageAssetPath : foliageOutputPath);
+        EditorPrefs.SetBool(FoliageIncludeTreesKey, foliageIncludeTrees);
+        EditorPrefs.SetBool(FoliageIncludeDetailsKey, foliageIncludeDetails);
+        EditorPrefs.SetBool(FoliageBakeTextureDetailsKey, foliageBakeTextureDetails);
+        EditorPrefs.SetBool(FoliageAutoAssignKey, foliageAutoAssignToSceneRenderer);
+        EditorPrefs.SetInt(FoliageMaxDetailPerCellKey, Mathf.Max(1, foliageMaxInstancesPerDetailCell));
+    }
+
+    private GpuDrivenTerrainFoliageBaker.Settings BuildFoliageSettings()
+    {
+        GpuDrivenTerrainFoliageBaker.Settings settings = GpuDrivenTerrainFoliageBaker.Settings.Default;
+        settings.includeTreeInstances = foliageIncludeTrees;
+        settings.includeDetailInstances = foliageIncludeDetails;
+        settings.bakeTextureDetailsAsCrossQuads = foliageBakeTextureDetails;
+        settings.autoAssignToSceneRenderer = foliageAutoAssignToSceneRenderer;
+        settings.maxInstancesPerDetailCell = Mathf.Max(1, foliageMaxInstancesPerDetailCell);
+        return settings;
     }
 
     private static void SavePrefs(float patchSize, int lodCount, string assetPath, bool autoAssign, int sourceMode)

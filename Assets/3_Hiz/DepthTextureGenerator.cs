@@ -1,5 +1,3 @@
-﻿using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -22,13 +20,12 @@ public class DepthTextureGenerator : MonoBehaviour
     [Header("Hi-Z Texture Precision")]
     [SerializeField] DepthTextureSizeMode textureSizeMode = DepthTextureSizeMode.ScreenHalfPowerOfTwo;
     [SerializeField] int fixedTextureSize = 1024;
-    [SerializeField] int minTextureSize = 1;
-    [SerializeField] int maxTextureSize = 1024;
     [SerializeField] DepthTexturePrecision texturePrecision = DepthTexturePrecision.RHalf;
     [SerializeField] bool rebuildOnScreenResize = true;
     [SerializeField] bool useExternalDepthTexture;
 
     Vector2Int depthTextureSize = Vector2Int.zero;
+    // 对外暴露给剔除使用的有效 HZB mip 数；按当前规则不会额外生成最后的 1x1 层。
     int activeDepthTextureMipCount = 1;
     public int DepthTextureSize
     {
@@ -76,8 +73,6 @@ public class DepthTextureGenerator : MonoBehaviour
 
     Material depthTextureMaterial;
 
-    int depthTextureShaderID;
-
     CommandBuffer depthMipmapGenerateCMD;
     Camera ownerCamera;
     bool useBuiltinCommandBuffer;
@@ -95,7 +90,6 @@ public class DepthTextureGenerator : MonoBehaviour
             depthTextureShader = Shader.Find("ComputeShader/DepthTextureMipmapCalculator");
         depthTextureMaterial = new Material(depthTextureShader);
         ownerCamera.depthTextureMode |= DepthTextureMode.Depth;
-        depthTextureShaderID = Shader.PropertyToID("_CameraDepthTexture");
         EnsureDepthTexture();
 
         useBuiltinCommandBuffer = GraphicsSettings.currentRenderPipeline == null;
@@ -156,6 +150,7 @@ public class DepthTextureGenerator : MonoBehaviour
         lastHiZCamera = sourceCamera;
         lastHiZCameraPosition = sourceCamera.transform.position;
         lastHiZMatrixVP = hizMatrixVP;
+        // x/y 是真实的非正方形 HZB 尺寸，z 是剔除侧允许采样的有效 mip 数。
         lastHiZMapSize = depthTexture != null
             ? new Vector4(depthTexture.width, depthTexture.height, activeDepthTextureMipCount, 0.0f)
             : Vector4.zero;
@@ -247,6 +242,7 @@ public class DepthTextureGenerator : MonoBehaviour
 
         int sourceWidth = ownerCamera != null && ownerCamera.pixelWidth > 0 ? ownerCamera.pixelWidth : Screen.width;
         int sourceHeight = ownerCamera != null && ownerCamera.pixelHeight > 0 ? ownerCamera.pixelHeight : Screen.height;
+        // HZBSize = RoundUpToPowerOfTwo(ViewRect.Size) >> 1，保留相机宽高比。
         return new Vector2Int(
             CalculateHZBDimension(sourceWidth),
             CalculateHZBDimension(sourceHeight));
@@ -254,12 +250,14 @@ public class DepthTextureGenerator : MonoBehaviour
 
     static int CalculateHZBDimension(int viewSize)
     {
+        // 极小视口也至少保留有效 mip0。
         return Mathf.Max(1, Mathf.NextPowerOfTwo(Mathf.Max(1, viewSize)) >> 1);
     }
 
     static int CalculateHiZMipCount(Vector2Int size)
     {
         int maxSize = Mathf.Max(size.x, size.y, 1);
+        // NumMips = max(floor(log2(max(HZBSize.X, HZBSize.Y))), 1)。
         return Mathf.Max(Mathf.FloorToInt(Mathf.Log(maxSize, 2.0f)), 1);
     }
 
@@ -366,8 +364,6 @@ public class DepthTextureGenerator : MonoBehaviour
     void OnValidate()
     {
         fixedTextureSize = Mathf.Max(8, Mathf.NextPowerOfTwo(Mathf.Max(1, fixedTextureSize)));
-        minTextureSize = Mathf.Max(1, minTextureSize);
-        maxTextureSize = Mathf.Max(minTextureSize, maxTextureSize);
         depthTextureSize = Vector2Int.zero;
         activeDepthTextureMipCount = 1;
         InvalidateHiZHistory();

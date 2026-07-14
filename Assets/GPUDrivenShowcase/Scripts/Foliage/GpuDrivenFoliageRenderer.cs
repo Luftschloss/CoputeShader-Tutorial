@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -11,6 +12,7 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
     private static readonly int BaseMapId = Shader.PropertyToID("_BaseMap");
     private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
     private static readonly int CutoffId = Shader.PropertyToID("_Cutoff");
+    private static readonly int BillboardId = Shader.PropertyToID("_GpuDrivenFoliageBillboard");
     private static readonly int AllMatricesId = Shader.PropertyToID("_AllMatrices");
     private static readonly int VisibleMatricesId = Shader.PropertyToID("_VisibleMatrices");
     private static readonly int VPMatrixId = Shader.PropertyToID("_VPMatrix");
@@ -24,6 +26,8 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
     private static readonly int IsOpenGLId = Shader.PropertyToID("_IsOpenGL");
     private static readonly int FrustumPaddingId = Shader.PropertyToID("_FrustumPadding");
     private static readonly int HiZDepthBiasId = Shader.PropertyToID("_HiZDepthBias");
+    private static readonly int DebugColorModeId = Shader.PropertyToID("_GpuDrivenFoliageDebugColorMode");
+    private static readonly int DebugColorId = Shader.PropertyToID("_GpuDrivenFoliageDebugColor");
 
     [Header("Data")]
     [SerializeField] private GpuDrivenFoliageData foliageData;
@@ -39,6 +43,11 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
     [Header("Material Defaults")]
     [SerializeField] private Color fallbackBaseColor = Color.white;
     [SerializeField, Range(0.0f, 1.0f)] private float alphaCutoff = 0.35f;
+    [SerializeField] private List<FoliageMaterialOverride> materialOverrides = new List<FoliageMaterialOverride>();
+
+    [Header("Debug")]
+    [SerializeField, Min(0)] private int debugMaxDrawnInstances = 1024;
+    [SerializeField] private bool debugDrawWorldBounds = true;
 
     private readonly List<PrototypeRuntime> runtimes = new List<PrototypeRuntime>();
     private readonly uint[] args = new uint[5];
@@ -49,6 +58,9 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
     private int lastVisibleInstanceCount;
     private bool lastHizActive;
     private bool debugStatsEnabled;
+    private bool sceneWireDebugEnabled;
+    private bool debugColorModeEnabled;
+    private bool debugVisibleReadbackActive;
 
     public string DisplayName => "GPU Foliage";
     public GpuDrivenFoliageData FoliageData => foliageData;
@@ -65,6 +77,8 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
         {
             foliageShader = Shader.Find("GPU Driven/Foliage Indirect");
         }
+
+        SyncMaterialOverridesWithData();
 
         if (Application.isPlaying)
         {
@@ -100,6 +114,8 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
         {
             depthTextureGenerator = Camera.main.GetComponent<DepthTextureGenerator>();
         }
+
+        SyncMaterialOverridesWithData();
     }
 #endif
 
@@ -116,6 +132,7 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
         }
 
         bool useCulling = cullingMode != GpuDrivenShowcaseCullingMode.None;
+        bool cullingActive = useCulling && cullingCompute != null && cullKernel >= 0;
         bool useHiZ = cullingMode.UsesHiZ() &&
                       depthTextureGenerator != null &&
                       depthTextureGenerator.DepthTexture != null;
@@ -125,7 +142,7 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
             depthTextureGenerator.useHiz = true;
         }
 
-        if (useCulling && cullingCompute != null && cullKernel >= 0)
+        if (cullingActive)
         {
             DispatchCulling(useHiZ);
         }
@@ -134,8 +151,8 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
             DrawAllInstances();
         }
 
-        DrawVisibleInstances(useCulling && cullingCompute != null && cullKernel >= 0);
-        ReadbackStatsIfNeeded(useCulling && debugStatsEnabled);
+        DrawVisibleInstances(cullingActive);
+        ReadbackDebugDataIfNeeded(cullingActive && debugStatsEnabled);
     }
 
     public void Rebuild()
@@ -186,8 +203,8 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
                 continue;
             }
 
-            PrototypeRuntime runtime = new PrototypeRuntime(prototype, matrices.Count);
-            runtime.material = CreateRuntimeMaterial(prototype);
+            PrototypeRuntime runtime = new PrototypeRuntime(i, prototype, matrices.Count);
+            runtime.material = CreateRuntimeMaterial(prototype, ResolveMaterialOverride(i));
             runtime.allMatricesBuffer.SetData(matrices);
             ResetArgs(runtime, matrices.Count);
             runtimes.Add(runtime);
@@ -197,6 +214,7 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
     public void SetFoliageData(GpuDrivenFoliageData data)
     {
         foliageData = data;
+        SyncMaterialOverridesWithData();
         if (Application.isPlaying && isActiveAndEnabled)
         {
             Rebuild();
@@ -210,11 +228,17 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
 
     public void SetDebugView(GpuDrivenShowcaseDebugView view)
     {
-        debugStatsEnabled = view == GpuDrivenShowcaseDebugView.SceneWire;
+        sceneWireDebugEnabled = view == GpuDrivenShowcaseDebugView.SceneWire;
+        debugStatsEnabled = sceneWireDebugEnabled;
+        if (!debugStatsEnabled)
+        {
+            ClearDebugVisibleReadback();
+        }
     }
 
     public void SetDebugColorMode(bool enabled)
     {
+        debugColorModeEnabled = enabled;
     }
 
     public void CollectStats(ref GpuDrivenShowcaseStats showcaseStats)
@@ -303,6 +327,8 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
 
             propertyBlock.Clear();
             propertyBlock.SetBuffer(MatrixBufferId, useVisibleBuffer ? runtime.visibleMatricesBuffer : runtime.allMatricesBuffer);
+            propertyBlock.SetFloat(DebugColorModeId, debugColorModeEnabled ? 1.0f : 0.0f);
+            propertyBlock.SetColor(DebugColorId, GetDebugColor(runtime.prototypeIndex));
             Graphics.DrawMeshInstancedIndirect(
                 runtime.prototype.mesh,
                 runtime.prototype.subMeshIndex,
@@ -318,28 +344,73 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
         }
     }
 
-    private void ReadbackStatsIfNeeded(bool useCulling)
+    private void ReadbackDebugDataIfNeeded(bool useCulling)
     {
-        if (!useCulling || Time.unscaledTime < nextStatsReadbackTime)
+        if (!useCulling)
+        {
+            ClearDebugVisibleReadback();
+            return;
+        }
+
+        if (Time.unscaledTime < nextStatsReadbackTime)
         {
             return;
         }
 
         nextStatsReadbackTime = Time.unscaledTime + 0.25f;
         lastVisibleInstanceCount = 0;
+        debugVisibleReadbackActive = true;
+        int perRuntimeBudget = GetPerRuntimeDebugBudget();
         for (int i = 0; i < runtimes.Count; i++)
         {
-            runtimes[i].argsBuffer.GetData(args);
-            lastVisibleInstanceCount += (int)args[1];
+            PrototypeRuntime runtime = runtimes[i];
+            runtime.argsBuffer.GetData(args);
+            int visibleCount = (int)args[1];
+            lastVisibleInstanceCount += visibleCount;
+
+            int readCount = Mathf.Min(visibleCount, perRuntimeBudget);
+            runtime.debugVisibleCount = readCount;
+            if (readCount <= 0)
+            {
+                continue;
+            }
+
+            runtime.EnsureDebugVisibleCapacity(readCount);
+            runtime.visibleMatricesBuffer.GetData(runtime.debugVisibleMatrices, 0, 0, readCount);
         }
     }
 
-    private Material CreateRuntimeMaterial(GpuDrivenFoliagePrototype prototype)
+    private int GetPerRuntimeDebugBudget()
+    {
+        if (debugMaxDrawnInstances <= 0 || runtimes.Count == 0)
+        {
+            return 0;
+        }
+
+        return Mathf.Max(1, Mathf.CeilToInt(debugMaxDrawnInstances / (float)runtimes.Count));
+    }
+
+    private void ClearDebugVisibleReadback()
+    {
+        debugVisibleReadbackActive = false;
+        for (int i = 0; i < runtimes.Count; i++)
+        {
+            runtimes[i].debugVisibleCount = 0;
+        }
+    }
+
+    private Material CreateRuntimeMaterial(GpuDrivenFoliagePrototype prototype, Material overrideMaterial)
     {
         Shader shader = foliageShader != null ? foliageShader : Shader.Find("GPU Driven/Foliage Indirect");
+        Material source = overrideMaterial != null ? overrideMaterial : prototype.sourceMaterial;
         if (shader == null)
         {
-            return prototype.sourceMaterial;
+            return source;
+        }
+
+        if (source != null && source.shader == shader)
+        {
+            return source;
         }
 
         Material material = new Material(shader)
@@ -347,25 +418,24 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
             hideFlags = HideFlags.HideAndDontSave
         };
 
-        Material source = prototype.sourceMaterial;
-        Texture baseMap = null;
-        Color baseColor = fallbackBaseColor;
+        Texture baseMap = prototype.baseMap;
+        Color baseColor = prototype.baseColor.a > 0.0f ? prototype.baseColor : fallbackBaseColor;
         if (source != null)
         {
-            if (source.HasProperty(BaseMapId))
+            if (baseMap == null && source.HasProperty(BaseMapId))
             {
                 baseMap = source.GetTexture(BaseMapId);
             }
-            else if (source.HasProperty("_MainTex"))
+            else if (baseMap == null && source.HasProperty("_MainTex"))
             {
                 baseMap = source.GetTexture("_MainTex");
             }
 
-            if (source.HasProperty(BaseColorId))
+            if (prototype.baseColor.a <= 0.0f && source.HasProperty(BaseColorId))
             {
                 baseColor = source.GetColor(BaseColorId);
             }
-            else if (source.HasProperty("_Color"))
+            else if (prototype.baseColor.a <= 0.0f && source.HasProperty("_Color"))
             {
                 baseColor = source.GetColor("_Color");
             }
@@ -376,8 +446,86 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
             material.SetTexture(BaseMapId, baseMap);
         }
         material.SetColor(BaseColorId, baseColor);
-        material.SetFloat(CutoffId, alphaCutoff);
+        material.SetFloat(CutoffId, prototype.alphaCutoff > 0.0f ? prototype.alphaCutoff : alphaCutoff);
+        if (material.HasProperty(BillboardId))
+        {
+            material.SetFloat(BillboardId, prototype.billboard ? 1.0f : 0.0f);
+        }
         return material;
+    }
+
+    private Material ResolveMaterialOverride(int prototypeIndex)
+    {
+        if (materialOverrides == null)
+        {
+            return null;
+        }
+
+        for (int i = 0; i < materialOverrides.Count; i++)
+        {
+            FoliageMaterialOverride materialOverride = materialOverrides[i];
+            if (materialOverride != null &&
+                materialOverride.prototypeIndex == prototypeIndex &&
+                materialOverride.material != null)
+            {
+                return materialOverride.material;
+            }
+        }
+
+        return null;
+    }
+
+    private void SyncMaterialOverridesWithData()
+    {
+        if (foliageData == null || foliageData.PrototypeCount <= 0)
+        {
+            return;
+        }
+
+        if (materialOverrides == null)
+        {
+            materialOverrides = new List<FoliageMaterialOverride>();
+        }
+
+        Material[] preservedMaterials = new Material[foliageData.PrototypeCount];
+        for (int i = 0; i < materialOverrides.Count; i++)
+        {
+            FoliageMaterialOverride materialOverride = materialOverrides[i];
+            if (materialOverride == null ||
+                materialOverride.prototypeIndex < 0 ||
+                materialOverride.prototypeIndex >= preservedMaterials.Length ||
+                !ShouldPreserveMaterialOverride(materialOverride.material))
+            {
+                continue;
+            }
+
+            preservedMaterials[materialOverride.prototypeIndex] = materialOverride.material;
+        }
+
+        materialOverrides.Clear();
+        IReadOnlyList<GpuDrivenFoliagePrototype> prototypes = foliageData.Prototypes;
+        for (int i = 0; i < foliageData.PrototypeCount; i++)
+        {
+            Material material = preservedMaterials[i] != null
+                ? preservedMaterials[i]
+                : prototypes[i].sourceMaterial;
+            materialOverrides.Add(new FoliageMaterialOverride
+            {
+                prototypeIndex = i,
+                material = material
+            });
+        }
+    }
+
+    private bool ShouldPreserveMaterialOverride(Material material)
+    {
+        if (material == null)
+        {
+            return false;
+        }
+
+        Shader shader = foliageShader != null ? foliageShader : Shader.Find("GPU Driven/Foliage Indirect");
+        return shader != null && material.shader == shader;
     }
 
     private void ResetArgs(PrototypeRuntime runtime, int instanceCount)
@@ -412,22 +560,193 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
                deviceType == GraphicsDeviceType.OpenGLES3;
     }
 
+    private void OnDrawGizmos()
+    {
+        if (!sceneWireDebugEnabled || foliageData == null)
+        {
+            return;
+        }
+
+        Bounds worldBounds = foliageData.WorldBounds;
+        if (debugDrawWorldBounds)
+        {
+            Gizmos.color = new Color(0.1f, 0.9f, 0.3f, 0.85f);
+            Gizmos.DrawWireCube(worldBounds.center, worldBounds.size);
+        }
+
+#if UNITY_EDITOR
+        DrawDebugLabel(worldBounds);
+#endif
+
+        if (debugMaxDrawnInstances <= 0 || foliageData.InstanceCount == 0 || foliageData.PrototypeCount == 0)
+        {
+            return;
+        }
+
+        bool drawRuntimeVisible = Application.isPlaying && debugVisibleReadbackActive && runtimes.Count > 0;
+        DrawBakedInstanceSample(drawRuntimeVisible);
+        if (drawRuntimeVisible)
+        {
+            DrawRuntimeVisibleGizmos();
+        }
+    }
+
+    private void DrawBakedInstanceSample(bool dimmed)
+    {
+        IReadOnlyList<GpuDrivenFoliageInstance> instances = foliageData.Instances;
+        IReadOnlyList<GpuDrivenFoliagePrototype> prototypes = foliageData.Prototypes;
+        int prototypeCount = prototypes.Count;
+        int perPrototypeBudget = GetPerPrototypeDebugBudget(prototypeCount);
+        int[] prototypeInstanceCounts = new int[prototypeCount];
+        for (int i = 0; i < instances.Count; i++)
+        {
+            int prototypeIndex = instances[i].prototypeIndex;
+            if (prototypeIndex >= 0 && prototypeIndex < prototypeCount)
+            {
+                prototypeInstanceCounts[prototypeIndex]++;
+            }
+        }
+
+        int[] prototypeStrides = new int[prototypeCount];
+        int[] prototypeSeenCounts = new int[prototypeCount];
+        int[] prototypeDrawnCounts = new int[prototypeCount];
+        for (int i = 0; i < prototypeCount; i++)
+        {
+            prototypeStrides[i] = Mathf.Max(1, Mathf.CeilToInt(prototypeInstanceCounts[i] / (float)perPrototypeBudget));
+        }
+
+        for (int i = 0; i < instances.Count; i++)
+        {
+            GpuDrivenFoliageInstance instance = instances[i];
+            int prototypeIndex = instance.prototypeIndex;
+            if (prototypeIndex < 0 || prototypeIndex >= prototypeCount)
+            {
+                continue;
+            }
+
+            int seenIndex = prototypeSeenCounts[prototypeIndex]++;
+            if (prototypeDrawnCounts[prototypeIndex] >= perPrototypeBudget ||
+                seenIndex % prototypeStrides[prototypeIndex] != 0)
+            {
+                continue;
+            }
+
+            Matrix4x4 matrix = instance.LocalToWorld;
+            Bounds bounds = TransformBounds(prototypes[prototypeIndex].localBounds, matrix);
+            Color color = GetDebugColor(prototypeIndex);
+            if (dimmed)
+            {
+                color.a = 0.25f;
+            }
+            Gizmos.color = color;
+            Gizmos.DrawWireCube(bounds.center, bounds.size);
+            prototypeDrawnCounts[prototypeIndex]++;
+        }
+    }
+
+    private int GetPerPrototypeDebugBudget(int prototypeCount)
+    {
+        if (debugMaxDrawnInstances <= 0 || prototypeCount <= 0)
+        {
+            return 0;
+        }
+
+        return Mathf.Max(1, Mathf.CeilToInt(debugMaxDrawnInstances / (float)prototypeCount));
+    }
+
+    private void DrawRuntimeVisibleGizmos()
+    {
+        for (int i = 0; i < runtimes.Count; i++)
+        {
+            PrototypeRuntime runtime = runtimes[i];
+            if (runtime.debugVisibleCount <= 0 || runtime.debugVisibleMatrices == null)
+            {
+                continue;
+            }
+
+            Gizmos.color = GetDebugColor(runtime.prototypeIndex);
+            for (int matrixIndex = 0; matrixIndex < runtime.debugVisibleCount; matrixIndex++)
+            {
+                Bounds bounds = TransformBounds(runtime.prototype.localBounds, runtime.debugVisibleMatrices[matrixIndex]);
+                Gizmos.DrawWireCube(bounds.center, bounds.size);
+            }
+        }
+    }
+
+#if UNITY_EDITOR
+    private void DrawDebugLabel(Bounds worldBounds)
+    {
+        Vector3 labelPosition = worldBounds.center + Vector3.up * Mathf.Max(2.0f, worldBounds.extents.y + 1.0f);
+        string visibleText = debugVisibleReadbackActive
+            ? lastVisibleInstanceCount + " / " + foliageData.InstanceCount
+            : "sample only / " + foliageData.InstanceCount;
+        Handles.Label(
+            labelPosition,
+            "GPU Foliage\nVisible: " + visibleText +
+            "\nPrototype: " + foliageData.PrototypeCount +
+            "\nHi-Z: " + (lastHizActive ? "On" : "Off"));
+    }
+#endif
+
+    private static Bounds TransformBounds(Bounds localBounds, Matrix4x4 localToWorld)
+    {
+        Vector3 center = localToWorld.MultiplyPoint3x4(localBounds.center);
+        Vector3 extents = localBounds.extents;
+        Vector3 axisX = localToWorld.MultiplyVector(new Vector3(extents.x, 0.0f, 0.0f));
+        Vector3 axisY = localToWorld.MultiplyVector(new Vector3(0.0f, extents.y, 0.0f));
+        Vector3 axisZ = localToWorld.MultiplyVector(new Vector3(0.0f, 0.0f, extents.z));
+        extents = new Vector3(
+            Mathf.Abs(axisX.x) + Mathf.Abs(axisY.x) + Mathf.Abs(axisZ.x),
+            Mathf.Abs(axisX.y) + Mathf.Abs(axisY.y) + Mathf.Abs(axisZ.y),
+            Mathf.Abs(axisX.z) + Mathf.Abs(axisY.z) + Mathf.Abs(axisZ.z));
+        return new Bounds(center, extents * 2.0f);
+    }
+
+    private static Color GetDebugColor(int prototypeIndex)
+    {
+        float hue = Mathf.Repeat(prototypeIndex * 0.6180339f, 1.0f);
+        Color color = Color.HSVToRGB(hue, 0.75f, 1.0f);
+        color.a = 0.85f;
+        return color;
+    }
+
+#pragma warning disable 0649
+    [Serializable]
+    private sealed class FoliageMaterialOverride
+    {
+        public int prototypeIndex;
+        public Material material;
+    }
+#pragma warning restore 0649
+
     private sealed class PrototypeRuntime
     {
+        public readonly int prototypeIndex;
         public readonly GpuDrivenFoliagePrototype prototype;
         public readonly int instanceCount;
         public readonly ComputeBuffer allMatricesBuffer;
         public readonly ComputeBuffer visibleMatricesBuffer;
         public readonly ComputeBuffer argsBuffer;
+        public Matrix4x4[] debugVisibleMatrices;
+        public int debugVisibleCount;
         public Material material;
 
-        public PrototypeRuntime(GpuDrivenFoliagePrototype prototype, int instanceCount)
+        public PrototypeRuntime(int prototypeIndex, GpuDrivenFoliagePrototype prototype, int instanceCount)
         {
+            this.prototypeIndex = prototypeIndex;
             this.prototype = prototype;
             this.instanceCount = instanceCount;
             allMatricesBuffer = new ComputeBuffer(instanceCount, sizeof(float) * 16);
             visibleMatricesBuffer = new ComputeBuffer(instanceCount, sizeof(float) * 16, ComputeBufferType.Append);
             argsBuffer = new ComputeBuffer(1, sizeof(uint) * 5, ComputeBufferType.IndirectArguments);
+        }
+
+        public void EnsureDebugVisibleCapacity(int count)
+        {
+            if (debugVisibleMatrices == null || debugVisibleMatrices.Length < count)
+            {
+                debugVisibleMatrices = new Matrix4x4[count];
+            }
         }
 
         public void Release()
@@ -439,11 +758,11 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
             {
                 if (Application.isPlaying)
                 {
-                    Object.Destroy(material);
+                    UnityEngine.Object.Destroy(material);
                 }
                 else
                 {
-                    Object.DestroyImmediate(material);
+                    UnityEngine.Object.DestroyImmediate(material);
                 }
             }
         }

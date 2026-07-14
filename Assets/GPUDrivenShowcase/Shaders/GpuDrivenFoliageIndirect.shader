@@ -5,6 +5,16 @@ Shader "GPU Driven/Foliage Indirect"
         _BaseMap("Base Map", 2D) = "white" {}
         _BaseColor("Base Color", Color) = (1, 1, 1, 1)
         _Cutoff("Alpha Cutoff", Range(0, 1)) = 0.35
+        _BumpMap("Normal Map", 2D) = "bump" {}
+        _NormalMap("Normal Map Alias", 2D) = "bump" {}
+        _BumpScale("Normal Scale", Float) = 1.0
+        _MaskMap("Mask Map", 2D) = "white" {}
+        _MetallicGlossMap("Metallic Gloss Map", 2D) = "white" {}
+        _OcclusionMap("Occlusion Map", 2D) = "white" {}
+        _EmissionMap("Emission Map", 2D) = "black" {}
+        _GpuDrivenFoliageBillboard("Billboard", Float) = 0
+        _GpuDrivenFoliageDebugColorMode("Debug Color Mode", Float) = 0
+        _GpuDrivenFoliageDebugColor("Debug Color", Color) = (1, 1, 1, 1)
     }
 
     SubShader
@@ -37,6 +47,9 @@ Shader "GPU Driven/Foliage Indirect"
             float4 _BaseMap_ST;
             half4 _BaseColor;
             half _Cutoff;
+            float _GpuDrivenFoliageBillboard;
+            float _GpuDrivenFoliageDebugColorMode;
+            half4 _GpuDrivenFoliageDebugColor;
             CBUFFER_END
 
             struct Attributes
@@ -60,8 +73,23 @@ Shader "GPU Driven/Foliage Indirect"
             {
                 Varyings output;
                 float4x4 localToWorld = _GpuDrivenFoliageMatrices[input.instanceID];
-                float3 positionWS = mul(localToWorld, float4(input.positionOS, 1.0f)).xyz;
-                float3 normalWS = normalize(mul((float3x3)localToWorld, input.normalOS));
+                float3 positionWS;
+                float3 normalWS;
+                if (_GpuDrivenFoliageBillboard > 0.5f)
+                {
+                    float3 centerWS = mul(localToWorld, float4(0.0f, 0.0f, 0.0f, 1.0f)).xyz;
+                    float width = length(mul((float3x3)localToWorld, float3(1.0f, 0.0f, 0.0f)));
+                    float height = length(mul((float3x3)localToWorld, float3(0.0f, 1.0f, 0.0f)));
+                    float3 cameraRightWS = normalize(float3(UNITY_MATRIX_I_V[0][0], UNITY_MATRIX_I_V[1][0], UNITY_MATRIX_I_V[2][0]));
+                    float3 upWS = float3(0.0f, 1.0f, 0.0f);
+                    positionWS = centerWS + cameraRightWS * input.positionOS.x * width + upWS * input.positionOS.y * height;
+                    normalWS = normalize(GetCameraPositionWS() - (centerWS + upWS * height * 0.5f));
+                }
+                else
+                {
+                    positionWS = mul(localToWorld, float4(input.positionOS, 1.0f)).xyz;
+                    normalWS = normalize(mul((float3x3)localToWorld, input.normalOS));
+                }
                 output.positionCS = TransformWorldToHClip(positionWS);
                 output.positionWS = positionWS;
                 output.normalWS = normalWS;
@@ -75,6 +103,10 @@ Shader "GPU Driven/Foliage Indirect"
                 half4 baseMap = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.uv);
                 half4 color = baseMap * _BaseColor;
                 clip(color.a - _Cutoff);
+                if (_GpuDrivenFoliageDebugColorMode > 0.5f)
+                {
+                    return half4(_GpuDrivenFoliageDebugColor.rgb, color.a);
+                }
 
                 float4 shadowCoord = TransformWorldToShadowCoord(input.positionWS);
                 Light mainLight = GetMainLight(shadowCoord);
@@ -110,6 +142,7 @@ Shader "GPU Driven/Foliage Indirect"
             float4 _BaseMap_ST;
             half4 _BaseColor;
             half _Cutoff;
+            float _GpuDrivenFoliageBillboard;
             CBUFFER_END
 
             struct Attributes
@@ -129,7 +162,20 @@ Shader "GPU Driven/Foliage Indirect"
             {
                 Varyings output;
                 float4x4 localToWorld = _GpuDrivenFoliageMatrices[input.instanceID];
-                float3 positionWS = mul(localToWorld, float4(input.positionOS, 1.0f)).xyz;
+                float3 positionWS;
+                if (_GpuDrivenFoliageBillboard > 0.5f)
+                {
+                    float3 centerWS = mul(localToWorld, float4(0.0f, 0.0f, 0.0f, 1.0f)).xyz;
+                    float width = length(mul((float3x3)localToWorld, float3(1.0f, 0.0f, 0.0f)));
+                    float height = length(mul((float3x3)localToWorld, float3(0.0f, 1.0f, 0.0f)));
+                    float3 cameraRightWS = normalize(float3(UNITY_MATRIX_I_V[0][0], UNITY_MATRIX_I_V[1][0], UNITY_MATRIX_I_V[2][0]));
+                    float3 upWS = float3(0.0f, 1.0f, 0.0f);
+                    positionWS = centerWS + cameraRightWS * input.positionOS.x * width + upWS * input.positionOS.y * height;
+                }
+                else
+                {
+                    positionWS = mul(localToWorld, float4(input.positionOS, 1.0f)).xyz;
+                }
                 output.positionCS = TransformWorldToHClip(positionWS);
                 output.uv = TRANSFORM_TEX(input.uv, _BaseMap);
                 return output;
