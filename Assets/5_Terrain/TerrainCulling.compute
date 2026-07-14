@@ -289,19 +289,18 @@ TerrainBounds GetBoundsUVD(TerrainBounds boundsWS)
 
 uint GetHizMip(TerrainBounds boundsUVD)
 {
-    float3 minP = boundsUVD.minPosition;
-    float3 maxP = boundsUVD.maxPosition;
-    float2 size = (maxP.xy - minP.xy) * _HizMapSize.x;
-    uint2 mip2 = (uint2)ceil(log2(size));
-    uint mip = clamp(max(mip2.x, mip2.y), 1u, (uint)_HizMapSize.z - 1u);
+    float2 minUv = saturate(boundsUVD.minPosition.xy);
+    float2 maxUv = saturate(boundsUVD.maxPosition.xy);
+    float2 size = max((maxUv - minUv) * _HizMapSize.xy, 1.0f);
+    uint mip = (uint)clamp(ceil(log2(max(size.x, size.y))), 0.0f, max(_HizMapSize.z - 1.0f, 0.0f));
     return mip;
 }
 
-float SampleHiz(float2 uv, uint mip, float mipTexSize)
+float SampleHiz(float2 uv, uint mip, float2 mipTexSize)
 {
-    uint2 coord = (uint2)floor(uv * mipTexSize);
-    uint mipTexSizeRounded = (uint)round(mipTexSize);
-    coord = min(coord, uint2(mipTexSizeRounded - 1u, mipTexSizeRounded - 1u));
+    uint2 mipSize = max((uint2)floor(mipTexSize), uint2(1u, 1u));
+    uint2 coord = (uint2)floor(saturate(uv) * (float2)mipSize);
+    coord = min(coord, mipSize - uint2(1u, 1u));
     return _HizMap.mips[mip][coord].r;
 }
 
@@ -317,7 +316,7 @@ bool HizOcclusionCull(TerrainBounds bounds)
     float3 minP = boundsUVD.minPosition;
     float3 maxP = boundsUVD.maxPosition;
 
-    float mipTexSize = round(_HizMapSize.x / pow(2.0f, (float)mip));
+    float2 mipTexSize = max(1.0f, floor(_HizMapSize.xy / exp2((float)mip)));
     float d1 = SampleHiz(minP.xy, mip, mipTexSize);
     float d2 = SampleHiz(maxP.xy, mip, mipTexSize);
     float d3 = SampleHiz(float2(minP.x, maxP.y), mip, mipTexSize);

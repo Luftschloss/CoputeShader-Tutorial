@@ -11,6 +11,5 @@ Assets/TerrainDemoScene_URP/Prefabs/Trees/** filter=lfs diff=lfs merge=lfs -text
 *.unity -filter -diff -merge text
 *.shader -filter -diff -merge text
 *.shadergraph -filter -diff -merge text
-*.cs -filter -diff -merge text
 
 Assets/5_Terrain/GpuTerrainBakedData.asset filter=lfs diff=lfs merge=lfs -text

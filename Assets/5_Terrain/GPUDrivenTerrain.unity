@@ -168,15 +168,17 @@ MonoBehaviour:
   writeTerrainDepthToHiZ: 0
   hizDepthBias: 1
   frustumPadding: 0.03
-  castShadowMap: 1
+  castShadowMap: 0
   receiveShadowMap: 0
   shadowMapUsesAllPatches: 0
   cullingComputeShader: {fileID: 7200000, guid: beecec0b3f4c538498da5dbb795cdb7a,
     type: 3}
   mat: {fileID: 2100000, guid: a792f678620bf7143812c829122b094c, type: 2}
   materialDebugMode: 0
+  debugReadbackFrameInterval: 6
+  drawInSceneView: 0
   depthTextureGenerator: {fileID: 163804544}
-  DebugGizmos: 1
+  DebugGizmos: 0
 --- !u!4 &116977646
 Transform:
   m_ObjectHideFlags: 0
@@ -300,14 +302,14 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   depthTextureShader: {fileID: 4800000, guid: f8fcddc59c8584e43b507f8fc5b42991, type: 3}
-  depthTexture: {fileID: 1818888114}
+  depthTexture: {fileID: 1810435163}
   depthType: 1
   textureSizeMode: 0
-  resolutionScale: 1
+  resolutionScale: 0.5
   fixedTextureSize: 1024
-  minTextureSize: 512
-  maxTextureSize: 2048
-  texturePrecision: 1
+  minTextureSize: 1
+  maxTextureSize: 1024
+  texturePrecision: 0
   rebuildOnScreenResize: 1
   useExternalDepthTexture: 0
   useHiz: 1
@@ -793,7 +795,7 @@ MeshFilter:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1658656564}
   m_Mesh: {fileID: 10207, guid: 0000000000000000e000000000000000, type: 0}
---- !u!84 &1818888114
+--- !u!84 &1810435163
 RenderTexture:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -807,12 +809,12 @@ RenderTexture:
   m_DownscaleFallback: 0
   m_IsAlphaChannelOptional: 0
   serializedVersion: 5
-  m_Width: 2048
-  m_Height: 2048
+  m_Width: 512
+  m_Height: 256
   m_AntiAliasing: 1
-  m_MipCount: -1
+  m_MipCount: 9
   m_DepthStencilFormat: 0
-  m_ColorFormat: 49
+  m_ColorFormat: 45
   m_MipMap: 1
   m_GenerateMips: 0
   m_SRGB: 0

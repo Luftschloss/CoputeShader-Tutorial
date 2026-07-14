@@ -138,6 +138,7 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
             CommandBuffer cmd = CommandBufferPool.Get("GPU Driven Hi-Z Pyramid");
             int dstWidth = depthTexture.width;
             int dstHeight = depthTexture.height;
+            int mipCount = Mathf.Max(1, Mathf.Min(generator.DepthTextureMipCount, depthTexture.mipmapCount));
             uint threadX;
             uint threadY;
             uint threadZ;
@@ -153,7 +154,7 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
             cmd.SetComputeVectorParam(hizMapCompute, DstTexSizeId, new Vector4(dstWidth, dstHeight, 0.0f, 0.0f));
 
 #if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
-            GetTempHizMapTexture(cmd, PingTexId, depthTexture.width, generator.DepthTextureFormat);
+            GetTempHizMapTexture(cmd, PingTexId, depthTexture.width, depthTexture.height, generator.DepthTextureFormat);
             cmd.SetComputeTextureParam(hizMapCompute, BlitKernel, MipCopyTexId, new RenderTargetIdentifier(PingTexId));
 #endif
 
@@ -170,19 +171,19 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
 
             int pingTex = PingTexId;
             int pongTex = PongTexId;
-            for (int mip = 1; mip < depthTexture.mipmapCount; mip++)
+            for (int mip = 1; mip < mipCount; mip++)
             {
                 int inputWidth = dstWidth;
                 int inputHeight = dstHeight;
-                dstWidth = Mathf.CeilToInt(dstWidth / 2.0f);
-                dstHeight = Mathf.CeilToInt(dstHeight / 2.0f);
+                dstWidth = Mathf.Max(1, dstWidth / 2);
+                dstHeight = Mathf.Max(1, dstHeight / 2);
                 cmd.SetComputeVectorParam(hizMapCompute, InputTexSizeId, new Vector4(inputWidth, inputHeight, 0.0f, 0.0f));
                 cmd.SetComputeVectorParam(hizMapCompute, DstTexSizeId, new Vector4(dstWidth, dstHeight, 0.0f, 0.0f));
                 cmd.SetComputeIntParam(hizMapCompute, MipId, mip);
                 cmd.SetComputeTextureParam(hizMapCompute, ReduceKernel, MipTexId, depthTexture, mip);
 
 #if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
-                GetTempHizMapTexture(cmd, pongTex, dstWidth, generator.DepthTextureFormat);
+                GetTempHizMapTexture(cmd, pongTex, dstWidth, dstHeight, generator.DepthTextureFormat);
                 cmd.SetComputeTextureParam(hizMapCompute, ReduceKernel, MipCopyTexId, new RenderTargetIdentifier(pongTex));
 #endif
 
@@ -237,9 +238,9 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
 #endif
         }
 
-        private static void GetTempHizMapTexture(CommandBuffer cmd, int nameId, int size, RenderTextureFormat format)
+        private static void GetTempHizMapTexture(CommandBuffer cmd, int nameId, int width, int height, RenderTextureFormat format)
         {
-            RenderTextureDescriptor desc = new RenderTextureDescriptor(size, size, format, 0, 1)
+            RenderTextureDescriptor desc = new RenderTextureDescriptor(width, height, format, 0, 1)
             {
                 autoGenerateMips = false,
                 useMipMap = false,

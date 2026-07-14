@@ -69,8 +69,10 @@ public class DrawGrass : MonoBehaviour
     {
         kernel = compute.FindKernel("GrassCulling");
         compute.SetInt("grassCount", grassCount);
-        int depthTextureSize = depthTextureGenerator != null ? depthTextureGenerator.DepthTextureSize : Mathf.NextPowerOfTwo(Mathf.Max(Screen.width, Screen.height));
-        compute.SetInt("depthTextureSize", depthTextureSize);
+        Vector4 depthTextureSize = depthTextureGenerator != null
+            ? new Vector4(depthTextureGenerator.DepthTextureWidth, depthTextureGenerator.DepthTextureHeight, depthTextureGenerator.DepthTextureMipCount, 0.0f)
+            : new Vector4(Screen.width, Screen.height, Mathf.FloorToInt(Mathf.Log(Mathf.Max(Screen.width, Screen.height), 2.0f)) + 1, 0.0f);
+        compute.SetVector("depthTextureSize", depthTextureSize);
         compute.SetBool("isOpenGL", IsOpenGLClipSpace());
         compute.SetBuffer(kernel, "grassMatrixBuffer", grassMatrixBuffer);
 
@@ -102,7 +104,18 @@ public class DrawGrass : MonoBehaviour
         {
             if (depthTextureGenerator != null && depthTextureGenerator.DepthTexture != null)
             {
-                compute.SetTexture(kernel, hizTextureId, depthTextureGenerator.DepthTexture);
+                RenderTexture depthTexture = depthTextureGenerator.DepthTexture;
+                compute.SetVector("depthTextureSize", new Vector4(
+                    depthTexture.width,
+                    depthTexture.height,
+                    depthTextureGenerator.DepthTextureMipCount,
+                    0.0f));
+                compute.SetTexture(kernel, hizTextureId, depthTexture);
+            }
+            else
+            {
+                compute.SetVector("depthTextureSize", Vector4.zero);
+                compute.SetTexture(kernel, hizTextureId, Texture2D.blackTexture);
             }
             compute.SetMatrix(vpMatrixId, GL.GetGPUProjectionMatrix(mainCamera.projectionMatrix, false) * mainCamera.worldToCameraMatrix);
             cullResultBuffer.SetCounterValue(0);

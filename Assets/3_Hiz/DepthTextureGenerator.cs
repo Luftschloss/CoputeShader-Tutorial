@@ -20,23 +20,35 @@ public class DepthTextureGenerator : MonoBehaviour
     public DepthType depthType;
 
     [Header("Hi-Z Texture Precision")]
-    [SerializeField] DepthTextureSizeMode textureSizeMode = DepthTextureSizeMode.ScreenPowerOfTwo;
-    [SerializeField, Range(0.25f, 2.0f)] float resolutionScale = 1.0f;
+    [SerializeField] DepthTextureSizeMode textureSizeMode = DepthTextureSizeMode.ScreenHalfPowerOfTwo;
     [SerializeField] int fixedTextureSize = 1024;
-    [SerializeField] int minTextureSize = 512;
-    [SerializeField] int maxTextureSize = 2048;
-    [SerializeField] DepthTexturePrecision texturePrecision = DepthTexturePrecision.RFloat;
+    [SerializeField] int minTextureSize = 1;
+    [SerializeField] int maxTextureSize = 1024;
+    [SerializeField] DepthTexturePrecision texturePrecision = DepthTexturePrecision.RHalf;
     [SerializeField] bool rebuildOnScreenResize = true;
     [SerializeField] bool useExternalDepthTexture;
 
-    int depthTextureSize = 0;
+    Vector2Int depthTextureSize = Vector2Int.zero;
+    int activeDepthTextureMipCount = 1;
     public int DepthTextureSize
+    {
+        get
+        {
+            Vector2Int dimensions = DepthTextureDimensions;
+            return Mathf.Max(dimensions.x, dimensions.y);
+        }
+    }
+
+    public int DepthTextureWidth => DepthTextureDimensions.x;
+    public int DepthTextureHeight => DepthTextureDimensions.y;
+
+    public Vector2Int DepthTextureDimensions
     {
         get
         {
             if (useExternalDepthTexture && depthTexture != null)
             {
-                depthTextureSize = depthTexture.width;
+                depthTextureSize = new Vector2Int(depthTexture.width, depthTexture.height);
                 return depthTextureSize;
             }
 
@@ -50,7 +62,7 @@ public class DepthTextureGenerator : MonoBehaviour
         get
         {
             EnsureDepthTexture();
-            return depthTexture != null ? depthTexture.mipmapCount : 0;
+            return depthTexture != null ? activeDepthTextureMipCount : 0;
         }
     }
 
@@ -58,7 +70,7 @@ public class DepthTextureGenerator : MonoBehaviour
         ? depthTexture.format
         : GetConfiguredDepthTextureFormat();
 
-    public string DepthTextureDescription => DepthTextureSize + " " + DepthTextureFormat;
+    public string DepthTextureDescription => DepthTextureWidth + "x" + DepthTextureHeight + " " + DepthTextureFormat;
 
     public bool useHiz;
 
@@ -115,7 +127,9 @@ public class DepthTextureGenerator : MonoBehaviour
             {
                 depthTexture.Create();
             }
-            depthTextureSize = depthTexture != null ? depthTexture.width : 0;
+            depthTextureSize = depthTexture != null
+                ? new Vector2Int(depthTexture.width, depthTexture.height)
+                : Vector2Int.zero;
             return;
         }
 
@@ -143,7 +157,7 @@ public class DepthTextureGenerator : MonoBehaviour
         lastHiZCameraPosition = sourceCamera.transform.position;
         lastHiZMatrixVP = hizMatrixVP;
         lastHiZMapSize = depthTexture != null
-            ? new Vector4(depthTexture.width, depthTexture.height, depthTexture.mipmapCount, 0.0f)
+            ? new Vector4(depthTexture.width, depthTexture.height, activeDepthTextureMipCount, 0.0f)
             : Vector4.zero;
         lastHiZUpdateFrame = Time.frameCount;
     }
@@ -175,7 +189,12 @@ public class DepthTextureGenerator : MonoBehaviour
             {
                 depthTexture.Create();
             }
-            depthTextureSize = depthTexture != null ? depthTexture.width : 0;
+            depthTextureSize = depthTexture != null
+                ? new Vector2Int(depthTexture.width, depthTexture.height)
+                : Vector2Int.zero;
+            activeDepthTextureMipCount = depthTexture != null
+                ? Mathf.Min(depthTexture.mipmapCount, CalculateHiZMipCount(depthTextureSize))
+                : 0;
             if (!wasCreated && depthTexture != null)
             {
                 InvalidateHiZHistory();
@@ -183,42 +202,65 @@ public class DepthTextureGenerator : MonoBehaviour
             return;
         }
 
-        int targetSize = CalculateDepthTextureSize();
+        Vector2Int targetSize = CalculateDepthTextureSize();
+        int targetMipCount = CalculateHiZMipCount(targetSize);
         RenderTextureFormat targetFormat = GetConfiguredDepthTextureFormat();
         if (depthTexture != null &&
             depthTexture.IsCreated() &&
-            depthTexture.width == targetSize &&
-            depthTexture.height == targetSize &&
+            depthTexture.width == targetSize.x &&
+            depthTexture.height == targetSize.y &&
+            depthTexture.mipmapCount == targetMipCount &&
             depthTexture.format == targetFormat &&
             depthTexture.useMipMap &&
             depthTexture.enableRandomWrite)
         {
             depthTextureSize = targetSize;
+            activeDepthTextureMipCount = targetMipCount;
             return;
         }
 
         ReleaseManagedDepthTexture();
-        depthTexture = new RenderTexture(targetSize, targetSize, 0, targetFormat);
+        RenderTextureDescriptor descriptor = new RenderTextureDescriptor(targetSize.x, targetSize.y, targetFormat, 0)
+        {
+            autoGenerateMips = false,
+            useMipMap = true,
+            mipCount = targetMipCount,
+            enableRandomWrite = true
+        };
+        depthTexture = new RenderTexture(descriptor);
         depthTexture.name = "GPU Driven Hi-Z Depth";
-        depthTexture.autoGenerateMips = false;
-        depthTexture.useMipMap = true;
-        depthTexture.enableRandomWrite = true;
         depthTexture.filterMode = FilterMode.Point;
         depthTexture.wrapMode = TextureWrapMode.Clamp;
         depthTexture.Create();
         depthTextureSize = targetSize;
+        activeDepthTextureMipCount = targetMipCount;
         InvalidateHiZHistory();
     }
 
-    int CalculateDepthTextureSize()
+    Vector2Int CalculateDepthTextureSize()
     {
-        int baseSize = textureSizeMode == DepthTextureSizeMode.FixedPowerOfTwo
-            ? fixedTextureSize
-            : Mathf.CeilToInt(Mathf.Max(Screen.width, Screen.height) * resolutionScale);
-        int minSize = Mathf.Max(8, Mathf.NextPowerOfTwo(Mathf.Max(1, minTextureSize)));
-        int maxSize = Mathf.Max(minSize, Mathf.NextPowerOfTwo(Mathf.Max(1, maxTextureSize)));
-        int size = Mathf.NextPowerOfTwo(Mathf.Max(8, baseSize));
-        return Mathf.Clamp(size, minSize, maxSize);
+        if (textureSizeMode == DepthTextureSizeMode.FixedPowerOfTwo)
+        {
+            int fixedSize = Mathf.Max(1, Mathf.NextPowerOfTwo(Mathf.Max(1, fixedTextureSize)));
+            return new Vector2Int(fixedSize, fixedSize);
+        }
+
+        int sourceWidth = ownerCamera != null && ownerCamera.pixelWidth > 0 ? ownerCamera.pixelWidth : Screen.width;
+        int sourceHeight = ownerCamera != null && ownerCamera.pixelHeight > 0 ? ownerCamera.pixelHeight : Screen.height;
+        return new Vector2Int(
+            CalculateHZBDimension(sourceWidth),
+            CalculateHZBDimension(sourceHeight));
+    }
+
+    static int CalculateHZBDimension(int viewSize)
+    {
+        return Mathf.Max(1, Mathf.NextPowerOfTwo(Mathf.Max(1, viewSize)) >> 1);
+    }
+
+    static int CalculateHiZMipCount(Vector2Int size)
+    {
+        int maxSize = Mathf.Max(size.x, size.y, 1);
+        return Mathf.Max(Mathf.FloorToInt(Mathf.Log(maxSize, 2.0f)), 1);
     }
 
     RenderTextureFormat GetConfiguredDepthTextureFormat()
@@ -268,12 +310,14 @@ public class DepthTextureGenerator : MonoBehaviour
             return;
 
         int w = depthTexture.width;
+        int h = depthTexture.height;
         RenderTexture currentRenderTexture = null;//当前mipmapLevel对应的mipmap
         RenderTexture preRenderTexture = null;//上一层的mipmap，即mipmapLevel-1对应的mipmap
 
-        for (int mipmapLevel = 0; mipmapLevel < depthTexture.mipmapCount; mipmapLevel++)
+        int mipCount = Mathf.Min(activeDepthTextureMipCount, depthTexture.mipmapCount);
+        for (int mipmapLevel = 0; mipmapLevel < mipCount; mipmapLevel++)
         {
-            currentRenderTexture = RenderTexture.GetTemporary(w, w, 0, DepthTextureFormat);
+            currentRenderTexture = RenderTexture.GetTemporary(w, h, 0, DepthTextureFormat);
             currentRenderTexture.filterMode = FilterMode.Point;
             if (preRenderTexture == null)
             {
@@ -285,11 +329,12 @@ public class DepthTextureGenerator : MonoBehaviour
                 //将Mipmap[i] Blit到Mipmap[i+1]上
                 depthMipmapGenerateCMD.Blit(preRenderTexture, currentRenderTexture, depthTextureMaterial);
                 RenderTexture.ReleaseTemporary(preRenderTexture);
-        }
-        depthMipmapGenerateCMD.CopyTexture(currentRenderTexture, 0, 0, depthTexture, 0, mipmapLevel);
-        preRenderTexture = currentRenderTexture;
+            }
 
-        w = Mathf.Max(1, w / 2);
+            depthMipmapGenerateCMD.CopyTexture(currentRenderTexture, 0, 0, depthTexture, 0, mipmapLevel);
+            preRenderTexture = currentRenderTexture;
+            w = Mathf.Max(1, w / 2);
+            h = Mathf.Max(1, h / 2);
         }
         RenderTexture.ReleaseTemporary(preRenderTexture);
         MarkHiZUpdated(ownerCamera);
@@ -321,9 +366,10 @@ public class DepthTextureGenerator : MonoBehaviour
     void OnValidate()
     {
         fixedTextureSize = Mathf.Max(8, Mathf.NextPowerOfTwo(Mathf.Max(1, fixedTextureSize)));
-        minTextureSize = Mathf.Max(8, Mathf.NextPowerOfTwo(Mathf.Max(1, minTextureSize)));
-        maxTextureSize = Mathf.Max(minTextureSize, Mathf.NextPowerOfTwo(Mathf.Max(1, maxTextureSize)));
-        depthTextureSize = 0;
+        minTextureSize = Mathf.Max(1, minTextureSize);
+        maxTextureSize = Mathf.Max(minTextureSize, maxTextureSize);
+        depthTextureSize = Vector2Int.zero;
+        activeDepthTextureMipCount = 1;
         InvalidateHiZHistory();
     }
 
@@ -341,7 +387,7 @@ public class DepthTextureGenerator : MonoBehaviour
 
     public enum DepthTextureSizeMode
     {
-        ScreenPowerOfTwo,
+        ScreenHalfPowerOfTwo,
         FixedPowerOfTwo
     }
 

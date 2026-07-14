@@ -67,7 +67,7 @@ public class GPUTerrain : MonoBehaviour
     [Header("Shadow Map")]
     [SerializeField] private bool castShadowMap = true;
     [SerializeField] private bool receiveShadowMap = true;
-    [SerializeField] private bool shadowMapUsesAllPatches = true;
+    [SerializeField] private bool shadowMapUsesAllPatches;
 
     [Header("Rendering")]
     // 地形 frustum 和 Hi-Z 剔除使用的 compute shader。
@@ -78,6 +78,10 @@ public class GPUTerrain : MonoBehaviour
     [Header("Debug")]
     // shader 侧地形材质可视化模式。
     [SerializeField] private TerrainMaterialDebugMode materialDebugMode = TerrainMaterialDebugMode.Lit;
+    [SerializeField, Range(1, 30)] private int debugReadbackFrameInterval = 6;
+
+    [Header("Editor")]
+    [SerializeField] private bool drawInSceneView;
 
     // 相机持有的 Hi-Z 纹理提供者，供 terrain 和 foliage culling 共享。
     public DepthTextureGenerator depthTextureGenerator;
@@ -161,6 +165,8 @@ public class GPUTerrain : MonoBehaviour
     private bool terrainResourcesDirty;
     // 资源变化后触发 compute / material buffer 和静态 shader 状态重新绑定。
     private bool terrainGpuBindingsDirty = true;
+    private bool terrainRenderPropertiesDirty = true;
+    private bool materialStateDirty = true;
     // active set 或容量变化后重新上传顺序 active node ID。
     private bool nodeIdBufferDirty = true;
     private bool terrainLeafLookupInfoDirty = true;
@@ -173,6 +179,12 @@ public class GPUTerrain : MonoBehaviour
     private MaterialPropertyBlock hizDepthProperties;
     // 地形 shadow-only draw 复用的 property block。
     private MaterialPropertyBlock shadowProperties;
+    private ComputeBuffer appliedVisibleIdBuffer;
+    private bool appliedLodDebugColorMode;
+    private int appliedMaterialDebugMode = -1;
+    private bool appliedReceiveShadowMap;
+    private bool hasAppliedReceiveShadowMap;
+    private int nextDebugReadbackFrame;
 
     public void SetBakedData(GpuTerrainBakedData data)
     {
@@ -181,6 +193,8 @@ public class GPUTerrain : MonoBehaviour
         terrainResourcesDirty = true;
         forceLodRebuild = true;
         terrainGpuBindingsDirty = true;
+        terrainRenderPropertiesDirty = true;
+        materialStateDirty = true;
     }
 
     private void OnEnable()
@@ -189,7 +203,7 @@ public class GPUTerrain : MonoBehaviour
         camera = Camera.main;
         RebuildTerrainResources();
         ApplyMaterialState(showcaseCullingMode != GpuDrivenShowcaseCullingMode.None);
-        BindTerrainRenderProperties();
+        BindTerrainRenderPropertiesIfDirty();
     }
 
     private void OnValidate()
@@ -198,6 +212,8 @@ public class GPUTerrain : MonoBehaviour
         terrainResourcesDirty = true;
         forceLodRebuild = true;
         terrainGpuBindingsDirty = true;
+        terrainRenderPropertiesDirty = true;
+        materialStateDirty = true;
     }
 
     private void LateUpdate()
@@ -222,7 +238,7 @@ public class GPUTerrain : MonoBehaviour
             return;
         }
 
-        BindTerrainRenderProperties();
+        BindTerrainRenderPropertiesIfDirty();
         if (ShouldRebuildVisibleTerrainNodes())
         {
             Profiler.BeginSample("Gpu Terrain LOD");
@@ -249,7 +265,7 @@ public class GPUTerrain : MonoBehaviour
 
         Matrix4x4 vp = GL.GetGPUProjectionMatrix(camera.projectionMatrix, false) * camera.worldToCameraMatrix;
         visibleInstancePosIDBuffer.SetCounterValue(0);
-        if (visibleNodeInfoBuffer != null)
+        if (collectDebugStats && visibleNodeInfoBuffer != null)
         {
             visibleNodeInfoBuffer.SetCounterValue(0);
         }
@@ -288,13 +304,13 @@ public class GPUTerrain : MonoBehaviour
 
         ReadBackDebugStats(useCulling);
 #if UNITY_EDITOR
-        Camera drawCamera = null;
+        Camera drawCamera = drawInSceneView ? null : camera;
 #else
         Camera drawCamera = camera;
 #endif
         Graphics.DrawMeshInstancedIndirect(instanceMesh, 0, mat, nodeBounds, argsBuffer, 0, null,
             ShadowCastingMode.Off, receiveShadowMap, gameObject.layer, drawCamera);
-        DrawShadowMap();
+        DrawShadowMap(drawCamera);
     }
 
     private void OnDisable()
@@ -309,6 +325,8 @@ public class GPUTerrain : MonoBehaviour
         ReleaseBuffers();
         ReleaseTerrainTextureArrays();
         terrainGpuBindingsDirty = true;
+        terrainRenderPropertiesDirty = true;
+        materialStateDirty = true;
         nodeIdBufferDirty = true;
         activeNodeCount = 0;
         debugVisibleNodeCount = 0;
@@ -323,6 +341,7 @@ public class GPUTerrain : MonoBehaviour
         UpdateNodeBounds();
         BindBakedTextureArrays();
         UpdateTerrainShaderArrays();
+        terrainRenderPropertiesDirty = true;
         EnsureTerrainLeafLookupInfo();
         EnsureActiveNodeInfoCapacity(bakedData.NodeCount);
         EnsureActiveNodeIndexCapacity(bakedData.NodeCount);
@@ -1112,6 +1131,18 @@ public class GPUTerrain : MonoBehaviour
         {
             BindTerrainRenderProperties(mat);
         }
+
+        terrainRenderPropertiesDirty = false;
+    }
+
+    private void BindTerrainRenderPropertiesIfDirty()
+    {
+        if (!terrainRenderPropertiesDirty)
+        {
+            return;
+        }
+
+        BindTerrainRenderProperties();
     }
 
     private void BindTerrainRenderProperties(Material targetMaterial)
@@ -1208,14 +1239,14 @@ public class GPUTerrain : MonoBehaviour
             hizDepthProperties.Clear();
         }
 
+        BindTerrainRenderPropertiesIfDirty();
         hizDepthProperties.SetBuffer("_AllInstancesTransformBuffer", allInstancePosBuffer);
         hizDepthProperties.SetBuffer("_VisibleInstanceIDBuffer", allInstancePosIDBuffer);
-        BindTerrainRenderProperties(hizDepthProperties);
         cmd.DrawMeshInstancedIndirect(instanceMesh, 0, depthMaterial, shaderPass, depthArgsBuffer, 0, hizDepthProperties);
         return true;
     }
 
-    private void DrawShadowMap()
+    private void DrawShadowMap(Camera drawCamera)
     {
         if (!castShadowMap || mat == null || instanceMesh == null || allInstancePosBuffer == null ||
             heightMapArray == null || normalMapArray == null)
@@ -1239,12 +1270,12 @@ public class GPUTerrain : MonoBehaviour
             shadowProperties.Clear();
         }
 
+        BindTerrainRenderPropertiesIfDirty();
         shadowProperties.SetBuffer("_AllInstancesTransformBuffer", allInstancePosBuffer);
         shadowProperties.SetBuffer("_VisibleInstanceIDBuffer", shadowIdBuffer);
         shadowProperties.SetFloat(TerrainDebugColorModeId, 0.0f);
-        BindTerrainRenderProperties(shadowProperties);
         Graphics.DrawMeshInstancedIndirect(instanceMesh, 0, mat, nodeBounds, shadowArgs, 0, shadowProperties,
-            ShadowCastingMode.ShadowsOnly, false, gameObject.layer, null);
+            ShadowCastingMode.ShadowsOnly, false, gameObject.layer, drawCamera);
     }
 
     private void ReadBackDebugStats(bool useCulling)
@@ -1252,8 +1283,17 @@ public class GPUTerrain : MonoBehaviour
         if (!DebugGizmos)
         {
             debugVisibleNodeCount = 0;
+            nextDebugReadbackFrame = 0;
             return;
         }
+
+        int frameInterval = Mathf.Max(1, debugReadbackFrameInterval);
+        if (Time.frameCount < nextDebugReadbackFrame)
+        {
+            return;
+        }
+
+        nextDebugReadbackFrame = Time.frameCount + frameInterval;
 
         argsBuffer.GetData(args);
         lastVisiblePatchCount = args[1];
@@ -1321,6 +1361,7 @@ public class GPUTerrain : MonoBehaviour
     {
         showcaseCullingMode = mode;
         UpdateHiZGeneratorState(mode.UsesHiZ());
+        materialStateDirty = true;
         ApplyMaterialState(mode != GpuDrivenShowcaseCullingMode.None);
     }
 
@@ -1331,6 +1372,7 @@ public class GPUTerrain : MonoBehaviour
         {
             debugVisibleNodeCount = 0;
             ClearHiZStats();
+            nextDebugReadbackFrame = 0;
         }
         terrainGpuBindingsDirty = true;
     }
@@ -1358,6 +1400,8 @@ public class GPUTerrain : MonoBehaviour
         }
 
         terrainGpuBindingsDirty = true;
+        terrainRenderPropertiesDirty = true;
+        materialStateDirty = true;
         ApplyMaterialState(showcaseCullingMode != GpuDrivenShowcaseCullingMode.None);
     }
 
@@ -1395,21 +1439,42 @@ public class GPUTerrain : MonoBehaviour
         }
 
         ComputeBuffer idBuffer = useVisibleIdBuffer ? visibleInstancePosIDBuffer : allInstancePosIDBuffer;
-        if (idBuffer != null)
+        if (idBuffer != null && (materialStateDirty || appliedVisibleIdBuffer != idBuffer))
         {
             mat.SetBuffer("_VisibleInstanceIDBuffer", idBuffer);
+            appliedVisibleIdBuffer = idBuffer;
         }
 
-        mat.SetFloat(TerrainDebugColorModeId, materialDebugMode == TerrainMaterialDebugMode.LodColor ? 1.0f : 0.0f);
-        mat.SetInt(TerrainMaterialDebugModeId, (int)materialDebugMode);
-        if (receiveShadowMap)
+        bool lodDebugColorMode = materialDebugMode == TerrainMaterialDebugMode.LodColor;
+        if (materialStateDirty || appliedLodDebugColorMode != lodDebugColorMode)
         {
-            mat.DisableKeyword("_RECEIVE_SHADOWS_OFF");
+            mat.SetFloat(TerrainDebugColorModeId, lodDebugColorMode ? 1.0f : 0.0f);
+            appliedLodDebugColorMode = lodDebugColorMode;
         }
-        else
+
+        int materialDebugModeValue = (int)materialDebugMode;
+        if (materialStateDirty || appliedMaterialDebugMode != materialDebugModeValue)
         {
-            mat.EnableKeyword("_RECEIVE_SHADOWS_OFF");
+            mat.SetInt(TerrainMaterialDebugModeId, materialDebugModeValue);
+            appliedMaterialDebugMode = materialDebugModeValue;
         }
+
+        if (materialStateDirty || !hasAppliedReceiveShadowMap || appliedReceiveShadowMap != receiveShadowMap)
+        {
+            if (receiveShadowMap)
+            {
+                mat.DisableKeyword("_RECEIVE_SHADOWS_OFF");
+            }
+            else
+            {
+                mat.EnableKeyword("_RECEIVE_SHADOWS_OFF");
+            }
+
+            appliedReceiveShadowMap = receiveShadowMap;
+            hasAppliedReceiveShadowMap = true;
+        }
+
+        materialStateDirty = false;
     }
 
     private bool IsHiZReady()
@@ -1439,6 +1504,11 @@ public class GPUTerrain : MonoBehaviour
         {
             cullingComputeShader.SetTexture(cullTerrainKernel, HizMapId, hizMap);
             return true;
+        }
+
+        if (cullingComputeShader != null && cullTerrainKernel >= 0)
+        {
+            cullingComputeShader.SetTexture(cullTerrainKernel, HizMapId, Texture2D.blackTexture);
         }
 
         hizMapSize = Vector4.zero;
@@ -1480,6 +1550,8 @@ public class GPUTerrain : MonoBehaviour
         buildTerrainLeafLookupKernel = -1;
         buildTerrainNeighborsKernel = -1;
         terrainGpuBindingsDirty = true;
+        materialStateDirty = true;
+        appliedVisibleIdBuffer = null;
     }
 
     private void ReleaseTerrainTextureArrays()
@@ -1490,6 +1562,7 @@ public class GPUTerrain : MonoBehaviour
         layerDiffuseArray = null;
         layerNormalArray = null;
         layerMaskArray = null;
+        terrainRenderPropertiesDirty = true;
     }
 
     private void ReleaseUploadArrays()

@@ -6,7 +6,7 @@ bool useHiz;
 StructuredBuffer<float4x4> grassMatrixBuffer;
 AppendStructuredBuffer<float4x4> cullResultBuffer;
 float4x4 vpMatrix;
-uint depthTextureSize;
+float4 depthTextureSize;
 Texture2D hizTexture;
 
 //草的包围盒
@@ -88,12 +88,17 @@ void GrassCulling(uint3 id : SV_DispatchThreadID)
         if (isOpenGL)
             depth = minZ * 0.5f + 0.5f;
         //计算应该读取哪层mipmap
-        uint mipmapLevel = (uint)clamp(log2(max(maxX - minX, maxY - minY) * 0.5f * depthTextureSize), 0, log2(depthTextureSize) - 4);
+        float2 projectedSize = float2(maxX - minX, maxY - minY) * 0.5f * depthTextureSize.xy;
+        uint mipmapLevel = (uint)clamp(log2(max(max(projectedSize.x, projectedSize.y), 1.0f)), 0.0f, max(0.0f, depthTextureSize.z - 1.0f));
         //当前mipmap的大小
-        uint size = depthTextureSize / (1 << mipmapLevel);
+        uint2 size = max((uint2)floor(depthTextureSize.xy / exp2((float)mipmapLevel)), uint2(1u, 1u));
         //左下角和右下角点所在的像素
-        uint2 pixelLeftBottom = uint2(clamp(uvLeftBottom.x * size, 0, size - 1), clamp(uvLeftBottom.y * size, 0, size - 1));
-        uint2 pixelRightTop = uint2(clamp(uvRightTop.x * size, 0, size - 1), clamp(uvRightTop.y * size, 0, size - 1));
+        uint2 pixelLeftBottom = uint2(
+            clamp(floor(uvLeftBottom.x * (float)size.x), 0.0f, (float)(size.x - 1u)),
+            clamp(floor(uvLeftBottom.y * (float)size.y), 0.0f, (float)(size.y - 1u)));
+        uint2 pixelRightTop = uint2(
+            clamp(floor(uvRightTop.x * (float)size.x), 0.0f, (float)(size.x - 1u)),
+            clamp(floor(uvRightTop.y * (float)size.y), 0.0f, (float)(size.y - 1u)));
         //采样对应深度图的对应像素的深度值，并且作比较
         float depthInTexture = hizTexture.mips[mipmapLevel][pixelLeftBottom].r;
         if (isOpenGL) {

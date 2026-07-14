@@ -236,11 +236,26 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
 
         if (depthTextureGenerator != null)
         {
-            cullingCompute.SetInt(DepthTextureSizeId, depthTextureGenerator.DepthTextureSize);
-            if (depthTextureGenerator.DepthTexture != null)
+            RenderTexture depthTexture = depthTextureGenerator.DepthTexture;
+            if (depthTexture != null)
             {
-                cullingCompute.SetTexture(cullKernel, HiZMapId, depthTextureGenerator.DepthTexture);
+                cullingCompute.SetVector(DepthTextureSizeId, new Vector4(
+                    depthTexture.width,
+                    depthTexture.height,
+                    depthTextureGenerator.DepthTextureMipCount,
+                    0.0f));
+                cullingCompute.SetTexture(cullKernel, HiZMapId, depthTexture);
             }
+            else
+            {
+                cullingCompute.SetVector(DepthTextureSizeId, Vector4.zero);
+                cullingCompute.SetTexture(cullKernel, HiZMapId, Texture2D.blackTexture);
+            }
+        }
+        else
+        {
+            cullingCompute.SetVector(DepthTextureSizeId, Vector4.zero);
+            cullingCompute.SetTexture(cullKernel, HiZMapId, Texture2D.blackTexture);
         }
 
         for (int i = 0; i < runtimes.Count; i++)

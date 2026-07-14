@@ -13,6 +13,15 @@ float2 _InputTexSize;
 float2 _DstTexSize;
 uint _Mip;
 
+float ReduceDepth(float d1, float d2, float d3, float d4)
+{
+#if _REVERSE_Z
+    return min(min(d1, d2), min(d3, d4));
+#else
+    return max(max(d1, d2), max(d3, d4));
+#endif
+}
+
 [numthreads(8, 8, 1)]
 void Blit(uint3 id : SV_DispatchThreadID)
 {
@@ -21,11 +30,23 @@ void Blit(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    uint2 srcXY = floor(id.xy * _SrcTexSize / _DstTexSize);
-    srcXY = min(srcXY, (uint2)_SrcTexSize - 1);
-    MipTex[id.xy] = InTex[srcXY];
+    uint2 maxInputCoord = (uint2)_SrcTexSize - 1;
+    uint2 srcMin = min((uint2)floor(id.xy * _SrcTexSize / _DstTexSize), maxInputCoord);
+    uint2 srcMax = min((uint2)ceil((id.xy + uint2(1u, 1u)) * _SrcTexSize / _DstTexSize) - uint2(1u, 1u), maxInputCoord);
+    uint2 coord = srcMin;
+    uint2 coord10 = uint2(srcMax.x, srcMin.y);
+    uint2 coord01 = uint2(srcMin.x, srcMax.y);
+    uint2 coord11 = srcMax;
+
+    float d = ReduceDepth(
+        InTex[coord].r,
+        InTex[coord10].r,
+        InTex[coord01].r,
+        InTex[coord11].r);
+
+    MipTex[id.xy] = d;
 #if _PING_PONG_COPY
-    MipCopyTex[id.xy] = InTex[srcXY];
+    MipCopyTex[id.xy] = d;
 #endif
 }
 
@@ -54,11 +75,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     float d4 = InTex.mips[_Mip - 1][coord11].r;
 #endif
 
-#if _REVERSE_Z
-    float d = min(min(d1, d2), min(d3, d4));
-#else
-    float d = max(max(d1, d2), max(d3, d4));
-#endif
+    float d = ReduceDepth(d1, d2, d3, d4);
 
     MipTex[id.xy] = d;
 #if _PING_PONG_COPY

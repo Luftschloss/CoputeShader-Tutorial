@@ -8,7 +8,7 @@ float4x4 _VPMatrix;
 float3 _BoundsCenter;
 float3 _BoundsExtents;
 uint _InstanceCount;
-uint _DepthTextureSize;
+float4 _DepthTextureSize;
 uint _UseHiZ;
 uint _UseReversedZ;
 uint _IsOpenGL;
@@ -129,7 +129,7 @@ void CullFoliage(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    if (_UseHiZ == 0 || _DepthTextureSize == 0 || skipHiZ || !hasProjectedVertex)
+    if (_UseHiZ == 0 || _DepthTextureSize.x <= 0.0f || _DepthTextureSize.y <= 0.0f || skipHiZ || !hasProjectedVertex)
     {
         _VisibleMatrices.Append(localToWorld);
         return;
@@ -140,17 +140,17 @@ void CullFoliage(uint3 id : SV_DispatchThreadID)
     float depth = ConvertNdcZToRawDepth(_UseReversedZ != 0 ? maxZ : minZ);
     depth = saturate(depth + (_UseReversedZ != 0 ? _HiZDepthBias : -_HiZDepthBias));
 
-    float projectedSize = max(maxX - minX, maxY - minY) * 0.5f * _DepthTextureSize;
-    float maxMipLevel = max(0.0f, log2((float)_DepthTextureSize) - 4.0f);
-    uint mipmapLevel = (uint)clamp(log2(max(projectedSize, 1.0f)), 0.0f, maxMipLevel);
-    uint size = max(1u, _DepthTextureSize / (1u << mipmapLevel));
-    float maxPixel = (float)(size - 1);
+    float2 projectedSize = float2(maxX - minX, maxY - minY) * 0.5f * _DepthTextureSize.xy;
+    float maxMipLevel = max(0.0f, _DepthTextureSize.z - 1.0f);
+    uint mipmapLevel = (uint)clamp(log2(max(max(projectedSize.x, projectedSize.y), 1.0f)), 0.0f, maxMipLevel);
+    uint2 mipSize = max((uint2)floor(_DepthTextureSize.xy / exp2((float)mipmapLevel)), uint2(1u, 1u));
+    float2 maxPixel = (float2)(mipSize - uint2(1u, 1u));
     uint2 pixelLeftBottom = uint2(
-        clamp(floor(uvLeftBottom.x * (float)size), 0.0f, maxPixel),
-        clamp(floor(uvLeftBottom.y * (float)size), 0.0f, maxPixel));
+        clamp(floor(uvLeftBottom.x * (float)mipSize.x), 0.0f, maxPixel.x),
+        clamp(floor(uvLeftBottom.y * (float)mipSize.y), 0.0f, maxPixel.y));
     uint2 pixelRightTop = uint2(
-        clamp(floor(uvRightTop.x * (float)size), 0.0f, maxPixel),
-        clamp(floor(uvRightTop.y * (float)size), 0.0f, maxPixel));
+        clamp(floor(uvRightTop.x * (float)mipSize.x), 0.0f, maxPixel.x),
+        clamp(floor(uvRightTop.y * (float)mipSize.y), 0.0f, maxPixel.y));
 
     float d1 = _HiZMap.mips[mipmapLevel][pixelLeftBottom].r;
     float d2 = _HiZMap.mips[mipmapLevel][pixelRightTop].r;
