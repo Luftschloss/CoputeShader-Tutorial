@@ -29,6 +29,7 @@ struct TerrainLeafLookupInfo
 float4x4 _VPMatrix;
 float4x4 _HizCameraMatrixVP;
 Texture2D<float4> _HizMap;
+// _HizMapSize = (width, height, activeMipCount, 0)，z 是最大可采样 mip + 1。
 float4 _HizMapSize;
 uint _InstanceCount;
 bool _UseHiZ;
@@ -245,6 +246,7 @@ void IncludeFrustumPlaneResult(
 
 float3 TransformWorldToUVD(float3 positionWS)
 {
+    // Hi-Z 采样必须使用生成 pyramid 时记录的 VP，避免同帧相机矩阵变化导致坐标不一致。
     float4 positionHS = mul(_HizCameraMatrixVP, float4(positionWS, 1.0f));
     float3 uvd = positionHS.xyz / positionHS.w;
     uvd.xy = (uvd.xy + 1.0f) * 0.5f;
@@ -291,6 +293,7 @@ uint GetHizMip(TerrainBounds boundsUVD)
 {
     float2 minUv = saturate(boundsUVD.minPosition.xy);
     float2 maxUv = saturate(boundsUVD.maxPosition.xy);
+    // 根据投影包围盒在 HZB mip0 上的像素跨度选择 mip，并受 activeMipCount 限制。
     float2 size = max((maxUv - minUv) * _HizMapSize.xy, 1.0f);
     uint mip = (uint)clamp(ceil(log2(max(size.x, size.y))), 0.0f, max(_HizMapSize.z - 1.0f, 0.0f));
     return mip;
@@ -306,6 +309,7 @@ float SampleHiz(float2 uv, uint mip, float2 mipTexSize)
 
 bool HizOcclusionCull(TerrainBounds bounds)
 {
+    // 将 bounds 向相机方向轻微偏移，降低和遮挡物共面时的误剔除概率。
     bounds.minPosition -= normalize(bounds.minPosition - _HizCameraPositionWS) * _HizDepthBias;
     bounds.maxPosition -= normalize(bounds.maxPosition - _HizCameraPositionWS) * _HizDepthBias;
 
@@ -317,6 +321,7 @@ bool HizOcclusionCull(TerrainBounds bounds)
     float3 maxP = boundsUVD.maxPosition;
 
     float2 mipTexSize = max(1.0f, floor(_HizMapSize.xy / exp2((float)mip)));
+    // 采样投影矩形四角；四个点都证明被遮挡时才剔除该 patch。
     float d1 = SampleHiz(minP.xy, mip, mipTexSize);
     float d2 = SampleHiz(maxP.xy, mip, mipTexSize);
     float d3 = SampleHiz(float2(minP.x, maxP.y), mip, mipTexSize);
@@ -324,9 +329,11 @@ bool HizOcclusionCull(TerrainBounds bounds)
 
 #if _REVERSE_Z
     float depth = maxP.z;
+    // reversed-Z 中 raw depth 越大越近；mip 存 min depth，因此所有采样值都更近才算遮挡。
     return d1 > depth && d2 > depth && d3 > depth && d4 > depth;
 #else
     float depth = minP.z;
+    // normal-Z 中 raw depth 越小越近；mip 存 max depth，因此所有采样值都更近才算遮挡。
     return d1 < depth && d2 < depth && d3 < depth && d4 < depth;
 #endif
 }

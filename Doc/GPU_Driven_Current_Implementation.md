@@ -13,6 +13,7 @@
 - `Assets/GPUDrivenShowcase/Scripts/URP/GpuDrivenHizFeature.cs`
 - `Assets/GPUDrivenShowcase/Scripts/Core/GpuDrivenShowcaseController.cs`
 - `Assets/GPUDrivenShowcase/Scripts/UI/GpuDrivenShowcaseRuntimePanel.cs`
+- `Doc/GPU_Driven_HiZ_Generation_And_Culling.md`
 
 ## 当前架构概览
 
@@ -542,6 +543,8 @@ Hi-Z test 支持 reversed-Z：
 
 ## Hi-Z Pyramid 生成
 
+详细流程见 `GPU_Driven_HiZ_Generation_And_Culling.md`。本节只保留当前实现摘要。
+
 URP 路径在 `GpuDrivenHizFeature` 中实现，pass event 默认：
 
 ```csharp
@@ -558,13 +561,14 @@ Feature 只对 GameView camera 生效：
 
 实际输入是 URP 的 `renderer.cameraDepthTargetHandle`。pass 做两步：
 
-1. `Blit` kernel 把 camera depth 拷贝到 Hi-Z RT mip 0。
-2. `CSMain` kernel 逐 mip reduce 到完整 pyramid。
+1. `Blit` kernel 从 camera depth 直接构建 HZB 尺寸的 Hi-Z RT mip 0，不再先压到固定 `512x512`。
+2. `CSMain` kernel 逐 mip reduce 到 `DepthTextureGenerator.DepthTextureMipCount` 指定的有效 mip 数。
 
 `DepthTextureGenerator` 管理 Hi-Z render texture：
 
-- size 可按屏幕最近 power-of-two 生成，也可固定。
-- 默认 min/max 范围可配，当前支持 RFloat / RHalf。
+- 默认尺寸为 `RoundUpToPowerOfTwo(ViewRect.Width/Height) >> 1`，保留非正方形宽高比；也可固定 power-of-two 尺寸。
+- 有效 mip 数为 `max(floor(log2(max(HZBSize.X, HZBSize.Y))), 1)`，剔除侧通过 `_HizMapSize.z` / `_DepthTextureSize.z` 限制最高采样 mip。
+- 当前支持 RFloat / RHalf。
 - `autoGenerateMips = false`
 - `useMipMap = true`
 - `enableRandomWrite = true`
@@ -585,7 +589,7 @@ Windows / Editor 下启用了 `_PING_PONG_COPY`：
 - Hi-Z texture width/height/mipCount。
 - 当前 frame。
 
-`GPUTerrain` 和 foliage culling 通过 `TryGetCurrentHiZ` 获取这些信息；如果 camera 不匹配或从未更新，则本帧不启用 Hi-Z。
+`GPUTerrain` 通过 `TryGetCurrentHiZ` 获取这些信息；如果 camera 不匹配或从未更新，则本帧不启用 Hi-Z。foliage 和 legacy grass 当前直接绑定 `DepthTextureGenerator.DepthTexture`，共享同一个尺寸和有效 mip 数约定，但还没有像 terrain 一样消费生成 Hi-Z 时记录的历史 VP。
 
 ### Terrain depth injection 当前状态
 

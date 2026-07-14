@@ -8,6 +8,7 @@ float4x4 _VPMatrix;
 float3 _BoundsCenter;
 float3 _BoundsExtents;
 uint _InstanceCount;
+// _DepthTextureSize = (width, height, activeMipCount, 0)，z 限制最高可采样 mip。
 float4 _DepthTextureSize;
 uint _UseHiZ;
 uint _UseReversedZ;

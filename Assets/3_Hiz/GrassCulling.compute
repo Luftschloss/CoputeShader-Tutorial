@@ -6,6 +6,7 @@ bool useHiz;
 StructuredBuffer<float4x4> grassMatrixBuffer;
 AppendStructuredBuffer<float4x4> cullResultBuffer;
 float4x4 vpMatrix;
+// depthTextureSize = (width, height, activeMipCount, 0)，z 限制最高可采样 mip。
 float4 depthTextureSize;
 Texture2D hizTexture;
 

@@ -69,6 +69,7 @@ public class DrawGrass : MonoBehaviour
     {
         kernel = compute.FindKernel("GrassCulling");
         compute.SetInt("grassCount", grassCount);
+        // depthTextureSize.z 是有效 HZB mip 数，compute 会用它限制最高采样 mip。
         Vector4 depthTextureSize = depthTextureGenerator != null
             ? new Vector4(depthTextureGenerator.DepthTextureWidth, depthTextureGenerator.DepthTextureHeight, depthTextureGenerator.DepthTextureMipCount, 0.0f)
             : new Vector4(Screen.width, Screen.height, Mathf.FloorToInt(Mathf.Log(Mathf.Max(Screen.width, Screen.height), 2.0f)) + 1, 0.0f);
@@ -115,6 +116,7 @@ public class DrawGrass : MonoBehaviour
             else
             {
                 compute.SetVector("depthTextureSize", Vector4.zero);
+                // 禁用 Hi-Z 时仍绑定有效纹理，避免 compute kernel 校验纹理槽失败。
                 compute.SetTexture(kernel, hizTextureId, Texture2D.blackTexture);
             }
             compute.SetMatrix(vpMatrixId, GL.GetGPUProjectionMatrix(mainCamera.projectionMatrix, false) * mainCamera.worldToCameraMatrix);

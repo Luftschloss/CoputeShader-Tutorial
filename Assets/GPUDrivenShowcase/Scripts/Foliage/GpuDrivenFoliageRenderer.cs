@@ -239,6 +239,7 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
             RenderTexture depthTexture = depthTextureGenerator.DepthTexture;
             if (depthTexture != null)
             {
+                // z 使用 DepthTextureGenerator 的有效 mip 数，foliage compute 会用它限制最高采样 mip。
                 cullingCompute.SetVector(DepthTextureSizeId, new Vector4(
                     depthTexture.width,
                     depthTexture.height,
@@ -249,12 +250,14 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
             else
             {
                 cullingCompute.SetVector(DepthTextureSizeId, Vector4.zero);
+                // 禁用 Hi-Z 时仍绑定有效纹理，避免 compute kernel 校验纹理槽失败。
                 cullingCompute.SetTexture(cullKernel, HiZMapId, Texture2D.blackTexture);
             }
         }
         else
         {
             cullingCompute.SetVector(DepthTextureSizeId, Vector4.zero);
+            // 禁用 Hi-Z 时仍绑定有效纹理，避免 compute kernel 校验纹理槽失败。
             cullingCompute.SetTexture(cullKernel, HiZMapId, Texture2D.blackTexture);
         }
 

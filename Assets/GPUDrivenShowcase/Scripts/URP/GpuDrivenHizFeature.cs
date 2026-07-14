@@ -138,12 +138,14 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
             CommandBuffer cmd = CommandBufferPool.Get("GPU Driven Hi-Z Pyramid");
             int dstWidth = depthTexture.width;
             int dstHeight = depthTexture.height;
+            // 只生成 DepthTextureGenerator 暴露的有效 HZB mip，剔除侧会用 _HizMapSize.z 做采样上限。
             int mipCount = Mathf.Max(1, Mathf.Min(generator.DepthTextureMipCount, depthTexture.mipmapCount));
             uint threadX;
             uint threadY;
             uint threadZ;
             hizMapCompute.GetKernelThreadGroupSizes(BlitKernel, out threadX, out threadY, out threadZ);
 
+            // mip0 直接从 camera depth target 构建到 HZB 尺寸，不再先 blit 到固定 512x512 贴图。
             cmd.SetComputeTextureParam(hizMapCompute, BlitKernel, InTexId, cameraDepthSource);
             cmd.SetComputeTextureParam(hizMapCompute, BlitKernel, MipTexId, depthTexture, 0);
             cmd.SetComputeVectorParam(hizMapCompute, SrcTexSizeId, new Vector4(
@@ -154,6 +156,7 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
             cmd.SetComputeVectorParam(hizMapCompute, DstTexSizeId, new Vector4(dstWidth, dstHeight, 0.0f, 0.0f));
 
 #if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+            // Windows/Editor 下用临时 RT 承接上一层，避免同一 mipmapped UAV 跨 mip 读写的后端限制。
             GetTempHizMapTexture(cmd, PingTexId, depthTexture.width, depthTexture.height, generator.DepthTextureFormat);
             cmd.SetComputeTextureParam(hizMapCompute, BlitKernel, MipCopyTexId, new RenderTargetIdentifier(PingTexId));
 #endif
@@ -175,6 +178,7 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
             {
                 int inputWidth = dstWidth;
                 int inputHeight = dstHeight;
+                // 非正方形 HZB 每层分别折半，odd size 由 compute 侧 clamp 到有效输入像素。
                 dstWidth = Mathf.Max(1, dstWidth / 2);
                 dstHeight = Mathf.Max(1, dstHeight / 2);
                 cmd.SetComputeVectorParam(hizMapCompute, InputTexSizeId, new Vector4(inputWidth, inputHeight, 0.0f, 0.0f));
@@ -208,6 +212,7 @@ public sealed class GpuDrivenHizFeature : ScriptableRendererFeature
             Matrix4x4 matrixVP = GL.GetGPUProjectionMatrix(camera.projectionMatrix, false) * camera.worldToCameraMatrix;
             context.ExecuteCommandBuffer(cmd);
             CommandBufferPool.Release(cmd);
+            // 记录生成 pyramid 时的相机矩阵，剔除阶段必须用同一套投影坐标采样 Hi-Z。
             generator.MarkHiZUpdated(camera, matrixVP);
         }
 

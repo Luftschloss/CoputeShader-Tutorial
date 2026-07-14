@@ -307,8 +307,6 @@ MonoBehaviour:
   textureSizeMode: 0
   resolutionScale: 0.5
   fixedTextureSize: 1024
-  minTextureSize: 1
-  maxTextureSize: 1024
   texturePrecision: 0
   rebuildOnScreenResize: 1
   useExternalDepthTexture: 0

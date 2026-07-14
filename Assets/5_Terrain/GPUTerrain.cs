@@ -1508,6 +1508,7 @@ public class GPUTerrain : MonoBehaviour
 
         if (cullingComputeShader != null && cullTerrainKernel >= 0)
         {
+            // 即使 _UseHiZ=false，也绑定有效纹理，避免启动阶段 compute kernel 报 _HizMap 未设置。
             cullingComputeShader.SetTexture(cullTerrainKernel, HizMapId, Texture2D.blackTexture);
         }
 

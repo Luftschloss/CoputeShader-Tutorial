@@ -13,6 +13,7 @@ float2 _InputTexSize;
 float2 _DstTexSize;
 uint _Mip;
 
+// 每个 mip texel 保存该覆盖区域内最保守的遮挡深度；剔除比较方向必须和这里保持一致。
 float ReduceDepth(float d1, float d2, float d3, float d4)
 {
 #if _REVERSE_Z
@@ -31,6 +32,7 @@ void Blit(uint3 id : SV_DispatchThreadID)
     }
 
     uint2 maxInputCoord = (uint2)_SrcTexSize - 1;
+    // mip0 不是简单拷贝：每个 HZB 像素覆盖 camera depth 上对应的源像素范围。
     uint2 srcMin = min((uint2)floor(id.xy * _SrcTexSize / _DstTexSize), maxInputCoord);
     uint2 srcMax = min((uint2)ceil((id.xy + uint2(1u, 1u)) * _SrcTexSize / _DstTexSize) - uint2(1u, 1u), maxInputCoord);
     uint2 coord = srcMin;
@@ -59,6 +61,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     }
 
     uint2 maxInputCoord = (uint2)_InputTexSize - 1;
+    // 后续 mip 从上一层做 2x2 reduce；clamp 负责处理非正方形和奇数尺寸。
     uint2 coord = min(2 * id.xy, maxInputCoord);
     uint2 coord10 = min(coord + uint2(1, 0), maxInputCoord);
     uint2 coord01 = min(coord + uint2(0, 1), maxInputCoord);
