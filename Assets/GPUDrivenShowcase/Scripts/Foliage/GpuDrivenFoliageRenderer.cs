@@ -16,6 +16,7 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
     private static readonly int AllMatricesId = Shader.PropertyToID("_AllMatrices");
     private static readonly int VisibleMatricesId = Shader.PropertyToID("_VisibleMatrices");
     private static readonly int VPMatrixId = Shader.PropertyToID("_VPMatrix");
+    private static readonly int HiZMatrixVPId = Shader.PropertyToID("_HiZMatrixVP");
     private static readonly int HiZMapId = Shader.PropertyToID("_HiZMap");
     private static readonly int BoundsCenterId = Shader.PropertyToID("_BoundsCenter");
     private static readonly int BoundsExtentsId = Shader.PropertyToID("_BoundsExtents");
@@ -133,21 +134,21 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
 
         bool useCulling = cullingMode != GpuDrivenShowcaseCullingMode.None;
         bool cullingActive = useCulling && cullingCompute != null && cullKernel >= 0;
-        bool useHiZ = cullingMode.UsesHiZ() &&
-                      depthTextureGenerator != null &&
-                      depthTextureGenerator.DepthTexture != null;
-        lastHizActive = useHiZ;
-        if (useHiZ && depthTextureGenerator != null)
+        bool wantsHiZ = cullingMode.UsesHiZ() &&
+                        depthTextureGenerator != null &&
+                        depthTextureGenerator.DepthTexture != null;
+        if (depthTextureGenerator != null)
         {
-            depthTextureGenerator.useHiz = true;
+            depthTextureGenerator.useHiz = wantsHiZ;
         }
 
         if (cullingActive)
         {
-            DispatchCulling(useHiZ);
+            lastHizActive = DispatchCulling(wantsHiZ);
         }
         else
         {
+            lastHizActive = false;
             DrawAllInstances();
         }
 
@@ -248,42 +249,18 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
         showcaseStats.hizEnabled |= lastHizActive;
     }
 
-    private void DispatchCulling(bool useHiZ)
+    private bool DispatchCulling(bool wantsHiZ)
     {
         Matrix4x4 vpMatrix = GL.GetGPUProjectionMatrix(mainCamera.projectionMatrix, false) * mainCamera.worldToCameraMatrix;
+        bool useHiZ = BindHiZTextureIfReady(wantsHiZ, vpMatrix, out Vector4 hizMapSize, out Matrix4x4 hizMatrixVP);
         cullingCompute.SetMatrix(VPMatrixId, vpMatrix);
+        cullingCompute.SetMatrix(HiZMatrixVPId, hizMatrixVP);
         cullingCompute.SetInt(UseHiZId, useHiZ ? 1 : 0);
         cullingCompute.SetInt(UseReversedZId, SystemInfo.usesReversedZBuffer ? 1 : 0);
         cullingCompute.SetInt(IsOpenGLId, IsOpenGLClipSpace() ? 1 : 0);
         cullingCompute.SetFloat(FrustumPaddingId, frustumPadding);
         cullingCompute.SetFloat(HiZDepthBiasId, hizDepthBias);
-
-        if (depthTextureGenerator != null)
-        {
-            RenderTexture depthTexture = depthTextureGenerator.DepthTexture;
-            if (depthTexture != null)
-            {
-                // z 使用 DepthTextureGenerator 的有效 mip 数，foliage compute 会用它限制最高采样 mip。
-                cullingCompute.SetVector(DepthTextureSizeId, new Vector4(
-                    depthTexture.width,
-                    depthTexture.height,
-                    depthTextureGenerator.DepthTextureMipCount,
-                    0.0f));
-                cullingCompute.SetTexture(cullKernel, HiZMapId, depthTexture);
-            }
-            else
-            {
-                cullingCompute.SetVector(DepthTextureSizeId, Vector4.zero);
-                // 禁用 Hi-Z 时仍绑定有效纹理，避免 compute kernel 校验纹理槽失败。
-                cullingCompute.SetTexture(cullKernel, HiZMapId, Texture2D.blackTexture);
-            }
-        }
-        else
-        {
-            cullingCompute.SetVector(DepthTextureSizeId, Vector4.zero);
-            // 禁用 Hi-Z 时仍绑定有效纹理，避免 compute kernel 校验纹理槽失败。
-            cullingCompute.SetTexture(cullKernel, HiZMapId, Texture2D.blackTexture);
-        }
+        cullingCompute.SetVector(DepthTextureSizeId, hizMapSize);
 
         for (int i = 0; i < runtimes.Count; i++)
         {
@@ -297,6 +274,24 @@ public sealed class GpuDrivenFoliageRenderer : MonoBehaviour, IGpuDrivenShowcase
             cullingCompute.Dispatch(cullKernel, Mathf.CeilToInt(runtime.instanceCount / 64.0f), 1, 1);
             ComputeBuffer.CopyCount(runtime.visibleMatricesBuffer, runtime.argsBuffer, sizeof(uint));
         }
+
+        return useHiZ;
+    }
+
+    private bool BindHiZTextureIfReady(bool wantsHiZ, Matrix4x4 fallbackMatrixVP, out Vector4 hizMapSize, out Matrix4x4 hizMatrixVP)
+    {
+        if (wantsHiZ &&
+            depthTextureGenerator != null &&
+            depthTextureGenerator.TryGetCurrentHiZ(mainCamera, out RenderTexture hizMap, out hizMapSize, out hizMatrixVP, out _))
+        {
+            cullingCompute.SetTexture(cullKernel, HiZMapId, hizMap);
+            return true;
+        }
+
+        hizMapSize = Vector4.zero;
+        hizMatrixVP = fallbackMatrixVP;
+        cullingCompute.SetTexture(cullKernel, HiZMapId, Texture2D.blackTexture);
+        return false;
     }
 
     private void DrawAllInstances()
